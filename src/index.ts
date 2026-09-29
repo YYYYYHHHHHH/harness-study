@@ -1,46 +1,12 @@
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
+import chalk from 'chalk';
+import boxen from 'boxen';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { tools, dispatchTool } from './tools/index.js';
 
-const tools: ChatCompletionTool[] = [{
-  type: 'function',
-  function: {
-    name: 'get_current_time',
-    description: '查询指定 IANA 时区的当前日期和时间',
-    parameters: {
-      type: 'object',
-      properties: {
-        timeZone: {
-          type: 'string',
-          description: 'IANA 时区，例如 Asia/Shanghai',
-        },
-      },
-      required: ['timeZone'],
-      additionalProperties: false,
-    },
-  },
-}];
-
-async function executeTool(name: string, argumentsJson: string): Promise<string> {
-  if (name !== 'get_current_time') {
-    throw new Error(`未知工具：${name}`);
-  }
-
-  const args: unknown = JSON.parse(argumentsJson);
-  if (
-    typeof args !== 'object' || args === null ||
-    !('timeZone' in args) || typeof args.timeZone !== 'string'
-  ) {
-    throw new Error('get_current_time 的 timeZone 参数无效');
-  }
-
-  return JSON.stringify({
-    timeZone: args.timeZone,
-    currentTime: new Intl.DateTimeFormat('zh-CN', {
-      dateStyle: 'full',
-      timeStyle: 'long',
-      timeZone: args.timeZone,
-    }).format(new Date()),
-  });
+function truncate(text: string, max = 300): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + chalk.gray(`… (+${text.length - max} chars)`);
 }
 
 async function main() {
@@ -53,15 +19,36 @@ async function main() {
   }
 
   const client = new OpenAI({ apiKey, baseURL });
+  const input = process.argv.slice(2).join(' ') || '列出当前目录下的文件';
+
+  const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体。
+可用工具：bash（执行 shell 命令）、read_file（读取文件）、write_file（写入文件）、edit_file（替换文件片段）、glob（按模式查找文件）。
+请直接采取行动（调用工具），不需要解释。`;
+
+  console.log(
+    boxen(
+      `${chalk.bold.cyan('Agent 启动')}\n` +
+        `${chalk.gray('模型:')} ${chalk.white(model)}\n` +
+        `${chalk.gray('工作目录:')} ${chalk.white(process.cwd())}\n` +
+        `${chalk.gray('用户输入:')} ${chalk.yellow(input)}`,
+      {
+        padding: 1,
+        margin: { top: 1, bottom: 1, left: 0, right: 0 },
+        borderStyle: 'round',
+        borderColor: 'cyan',
+      },
+    ),
+  );
+
   const messages: ChatCompletionMessageParam[] = [
-    {
-      role: 'user',
-      content: '请告诉我上海现在的时间',
-    },
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: input },
   ];
   const maxRounds = 10;
 
   for (let round = 0; round < maxRounds; round += 1) {
+    console.log(chalk.magenta.bold(`\n━━━ Round ${round + 1} ━━━`));
+
     const response = await client.chat.completions.create({
       model,
       messages,
@@ -78,7 +65,16 @@ async function main() {
     const toolCalls = message.tool_calls ?? [];
 
     if (toolCalls.length === 0) {
-      console.log(message.content ?? '');
+      console.log(
+        boxen(chalk.green(message.content ?? ''), {
+          title: chalk.green.bold(' 最终答复 '),
+          titleAlignment: 'left',
+          padding: 1,
+          margin: { top: 1, bottom: 1, left: 0, right: 0 },
+          borderStyle: 'round',
+          borderColor: 'green',
+        }),
+      );
       return;
     }
 
@@ -86,18 +82,27 @@ async function main() {
       if (toolCall.type !== 'function') {
         throw new Error(`不支持的工具调用类型：${toolCall.type}`);
       }
+      const fnCall = toolCall.function;
 
       let content: string;
+      let ok = true;
       try {
-        content = await executeTool(
-          toolCall.function.name,
-          toolCall.function.arguments,
-        );
+        content = await dispatchTool(fnCall.name, fnCall.arguments);
       } catch (error) {
+        ok = false;
         content = JSON.stringify({
           error: error instanceof Error ? error.message : String(error),
         });
       }
+
+      console.log(
+        `${chalk.blue.bold('◆ Tool')} ${chalk.cyan(fnCall.name)} ` +
+          chalk.gray(`args=${truncate(fnCall.arguments, 200)}`),
+      );
+      console.log(
+        `  ${ok ? chalk.green('✓ result') : chalk.red('✗ error')} ` +
+          chalk.gray(truncate(content, 500)),
+      );
 
       messages.push({
         role: 'tool',
@@ -110,8 +115,7 @@ async function main() {
   throw new Error(`Agent Loop 超过最大轮次 ${maxRounds}`);
 }
 
-
 main().catch(error => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(chalk.red.bold('✗ '), chalk.red(error instanceof Error ? error.message : String(error)));
   process.exitCode = 1;
 });
