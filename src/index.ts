@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import chalk from 'chalk';
 import boxen from 'boxen';
+import ora from 'ora';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -73,12 +74,24 @@ async function main() {
     for (; round < maxRounds; round += 1) {
       console.log(chalk.magenta.bold(`\n━━━ Round ${round + 1} ━━━`));
 
-      const response = await client.chat.completions.create({
-        model,
-        messages,
-        tools,
-        tool_choice: 'auto',
-      });
+      const modelSpinner = ora({
+        text: chalk.gray('大模型思考中...'),
+        spinner: 'dots',
+      }).start();
+
+      let response;
+      try {
+        response = await client.chat.completions.create({
+          model,
+          messages,
+          tools,
+          tool_choice: 'auto',
+        });
+        modelSpinner.stop();
+      } catch (error) {
+        modelSpinner.fail(chalk.red('大模型调用失败'));
+        throw error;
+      }
       const message = response.choices[0]?.message;
       if (!message) {
         throw new Error('模型未返回消息');
