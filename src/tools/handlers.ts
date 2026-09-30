@@ -1,26 +1,16 @@
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, glob as fsGlob } from 'node:fs/promises';
-import { resolve, relative, isAbsolute } from 'node:path';
+import { resolve, isAbsolute } from 'node:path';
 
 const execAsync = promisify(exec);
 const WORKDIR = process.cwd();
 
-function safePath(path: string): string {
-  const absolute = isAbsolute(path) ? path : resolve(WORKDIR, path);
-  const rel = relative(WORKDIR, absolute);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error(`路径越界，禁止访问：${path}`);
-  }
-  return absolute;
+function toAbsolute(path: string): string {
+  return isAbsolute(path) ? path : resolve(WORKDIR, path);
 }
 
 export async function runBash(command: string): Promise<string> {
-  const dangerous = ['rm -rf /', 'sudo', 'shutdown', 'reboot', '> /dev/'];
-  if (dangerous.some(d => command.includes(d))) {
-    return 'Error: Dangerous command blocked';
-  }
-
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd: WORKDIR,
@@ -37,19 +27,19 @@ export async function runBash(command: string): Promise<string> {
 }
 
 export async function runRead(path: string, limit?: number): Promise<string> {
-  const text = await readFile(safePath(path), 'utf-8');
+  const text = await readFile(toAbsolute(path), 'utf-8');
   const lines = text.split('\n');
   const sliced = typeof limit === 'number' ? lines.slice(0, limit) : lines;
   return sliced.join('\n');
 }
 
 export async function runWrite(path: string, content: string): Promise<string> {
-  await writeFile(safePath(path), content, 'utf-8');
+  await writeFile(toAbsolute(path), content, 'utf-8');
   return `Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${path}`;
 }
 
 export async function runEdit(path: string, oldText: string, newText: string): Promise<string> {
-  const absolute = safePath(path);
+  const absolute = toAbsolute(path);
   const text = await readFile(absolute, 'utf-8');
   if (!text.includes(oldText)) {
     return 'Error: text not found';

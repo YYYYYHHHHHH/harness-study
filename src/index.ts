@@ -1,8 +1,11 @@
 import OpenAI from 'openai';
 import chalk from 'chalk';
 import boxen from 'boxen';
+import { createInterface } from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { tools, dispatchTool } from './tools/index.js';
+import { checkPermission } from './permissions/index.js';
 
 function truncate(text: string, max = 300): string {
   if (text.length <= max) return text;
@@ -19,7 +22,15 @@ async function main() {
   }
 
   const client = new OpenAI({ apiKey, baseURL });
-  const input = process.argv.slice(2).join(' ') || '列出当前目录下的文件';
+
+  const rl = createInterface({ input: stdin, output: stdout });
+  let input: string;
+  try {
+    const answer = await rl.question(chalk.cyan.bold('请输入你的问题: '));
+    input = answer.trim() || '列出当前目录下的文件';
+  } finally {
+    rl.close();
+  }
 
   const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体。
 可用工具：bash（执行 shell 命令）、read_file（读取文件）、write_file（写入文件）、edit_file（替换文件片段）、glob（按模式查找文件）。
@@ -86,13 +97,19 @@ async function main() {
 
       let content: string;
       let ok = true;
-      try {
-        content = await dispatchTool(fnCall.name, fnCall.arguments);
-      } catch (error) {
+      const permission = await checkPermission(fnCall.name, fnCall.arguments);
+      if (!permission.allowed) {
         ok = false;
-        content = JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-        });
+        content = permission.reason;
+      } else {
+        try {
+          content = await dispatchTool(fnCall.name, fnCall.arguments);
+        } catch (error) {
+          ok = false;
+          content = JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       console.log(
