@@ -60,13 +60,15 @@ export function registerHook(kind: keyof Registry, hook: unknown): void {
 }
 
 export async function triggerUserPromptSubmit(ctx: UserPromptSubmitCtx): Promise<void> {
-  for (const hook of registry.UserPromptSubmit) {
+  for (const [index, hook] of registry.UserPromptSubmit.entries()) {
+    console.log(`[hook] 调用 UserPromptSubmit #${index + 1}`);
     await hook(ctx);
   }
 }
 
 export async function triggerPreToolUse(ctx: PreToolUseCtx): Promise<PreToolUseDecision> {
-  for (const hook of registry.PreToolUse) {
+  for (const [index, hook] of registry.PreToolUse.entries()) {
+    console.log(`[hook] 调用 PreToolUse #${index + 1}`);
     const decision = await hook(ctx);
     if (decision && decision.deny) {
       return decision;
@@ -75,13 +77,15 @@ export async function triggerPreToolUse(ctx: PreToolUseCtx): Promise<PreToolUseD
 }
 
 export async function triggerPostToolUse(ctx: PostToolUseCtx): Promise<void> {
-  for (const hook of registry.PostToolUse) {
+  for (const [index, hook] of registry.PostToolUse.entries()) {
+    console.log(`[hook] 调用 PostToolUse #${index + 1}`);
     await hook(ctx);
   }
 }
 
 export async function triggerStop(ctx: StopCtx): Promise<void> {
-  for (const hook of registry.Stop) {
+  for (const [index, hook] of registry.Stop.entries()) {
+    console.log(`[hook] 调用 Stop #${index + 1}`);
     await hook(ctx);
   }
 }
