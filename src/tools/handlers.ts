@@ -175,4 +175,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
     requireString(args, 'task', 'spawn_subagent'),
     context,
   ),
+  load_skill: async (args, context) => {
+    const name = requireString(args, 'name', 'load_skill');
+    if (!name.trim()) throw new Error('load_skill 的 name 必须是非空字符串');
+    const skill = context.skills.get(name);
+    if (!skill) throw new Error(`未找到 skill：${name}。请使用 system prompt 中列出的 skill name。`);
+    return skill.body;
+  },
 };

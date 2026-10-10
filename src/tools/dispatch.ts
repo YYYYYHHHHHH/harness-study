@@ -1,10 +1,12 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
+import type { SkillRegistry } from '../skills/index.js';
 
 export interface ToolContext {
   client: OpenAI;
   model: string;
   tools: AgentTool[];
+  skills: SkillRegistry;
   logPrefix: string;
   runId: string;
 }

@@ -11,7 +11,7 @@ import { dispatchTool, type ToolContext } from '../src/tools/dispatch.js';
 import { runBash, runEdit, runGlob, runRead, runSpawnSubagent, runTodoWrite, runWrite } from '../src/tools/handlers.js';
 
 const context: ToolContext = {
-  client: {} as OpenAI, model: 'test-model', tools, logPrefix: '[test]', runId: 'test',
+  client: {} as OpenAI, model: 'test-model', tools, logPrefix: '[test]', runId: 'test', skills: new Map(),
 };
 let dir: string;
 let log: ReturnType<typeof vi.spyOn>;
@@ -87,6 +87,9 @@ it.each([
   ['edit_file', { path: 'x', old_text: 1, new_text: 'x' }, /old_text 参数无效/],
   ['edit_file', { path: 'x', old_text: 'x', new_text: false }, /new_text 参数无效/],
   ['glob', { pattern: 2 }, /pattern 参数无效/],
+  ['load_skill', { name: 2 }, /name 参数无效/],
+  ['load_skill', { name: ' ' }, /name 必须是非空字符串/],
+  ['load_skill', { name: 'missing' }, /未找到 skill：missing/],
   ['todo_write', { todos: {} }, /todos 参数必须是数组/],
   ['todo_write', { todos: [null] }, /todos\[0\] 不是对象/],
   ['todo_write', { todos: [2] }, /todos\[0\] 不是对象/],

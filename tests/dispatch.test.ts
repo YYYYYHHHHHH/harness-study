@@ -5,7 +5,7 @@ import { dispatchTool, type ToolContext } from '../src/tools/dispatch.js';
 function fixture() {
   const handler = vi.fn(async () => 'result');
   const context: ToolContext = {
-    client: {} as OpenAI, model: 'test', logPrefix: '', runId: 'test',
+    client: {} as OpenAI, model: 'test', logPrefix: '', runId: 'test', skills: new Map(),
     tools: [{ schema: { type: 'function', function: { name: 'example' } }, handler }],
   };
   return { context, handler };

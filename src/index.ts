@@ -46,7 +46,7 @@ async function main() {
   console.log(chalk.gray('╰' + '─'.repeat(60)));
 
   const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体（主 agent）。
-可用工具：todo_write（写入/更新 TODO 计划）、bash、read_file、write_file、edit_file、glob、spawn_subagent（派发子任务给独立 subagent，返回它的总结）。
+可用工具：todo_write（写入/更新 TODO 计划）、bash、read_file、write_file、edit_file、glob、spawn_subagent（派发子任务给独立 subagent，返回它的总结）、load_skill（按名称加载 skill 完整正文）。
 
 重要规则：
 1. 在执行任何其他工具之前，你必须先调用一次 todo_write 把要做的事情拆解成有序任务（status 用「未开始」「进行中」「已完成」三种之一），把即将执行的第一个任务标记为「进行中」。

@@ -135,4 +135,19 @@ export const toolSchemas: ChatCompletionFunctionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'load_skill',
+      description: '按名称加载可用 skill 的完整正文。任务匹配 skill 的描述时，先加载再按正文执行。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'system prompt 中列出的 skill name（不是目录名或路径）' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+    },
+  },
 ];

@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { dispatchTool, type AgentTool, type ToolContext } from './tools/dispatch.js';
+import { scanSkills, buildSkillsPrompt } from './skills/index.js';
 import {
   triggerUserPromptSubmit,
   triggerPreToolUse,
@@ -36,11 +37,15 @@ export async function runAgent({
   if (!Number.isInteger(maxRounds) || maxRounds < 1) {
     throw new Error('maxRounds 必须是正整数');
   }
-  const context: ToolContext = { client, model, tools, logPrefix, runId: randomUUID() };
+  const skills = await scanSkills();
+  const context: ToolContext = { client, model, tools, skills, logPrefix, runId: randomUUID() };
+  const skillsPrompt = tools.some(tool => tool.schema.function.name === 'load_skill')
+    ? buildSkillsPrompt(skills)
+    : '';
   const hookContext = { runId: context.runId, logPrefix };
   const tag = logPrefix ? `${logPrefix} ` : '';
   const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: systemPrompt + skillsPrompt },
     { role: 'user', content: input },
   ];
   let finished = false;
