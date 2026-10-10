@@ -80,4 +80,36 @@ export const tools: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'todo_write',
+      description:
+        '写入/更新当前任务的 TODO 计划，渲染到终端供用户查看。执行任何其他工具前必须先调用一次来规划步骤，后续可反复调用以更新状态。',
+      parameters: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            description: '任务列表，按执行顺序排列',
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', description: '任务内容描述' },
+                status: {
+                  type: 'string',
+                  enum: ['未开始', '进行中', '已完成'],
+                  description: '任务状态',
+                },
+              },
+              required: ['content', 'status'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['todos'],
+        additionalProperties: false,
+      },
+    },
+  },
 ];

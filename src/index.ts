@@ -56,8 +56,13 @@ async function main() {
   console.log(chalk.gray('╰' + '─'.repeat(60)));
 
   const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体。
-可用工具：bash（执行 shell 命令）、read_file（读取文件）、write_file（写入文件）、edit_file（替换文件片段）、glob（按模式查找文件）。
-请直接采取行动（调用工具），不需要解释。`;
+可用工具：todo_write（写入/更新 TODO 计划）、bash（执行 shell 命令）、read_file（读取文件）、write_file（写入文件）、edit_file（替换文件片段）、glob（按模式查找文件）。
+
+重要规则：
+1. 在执行任何其他工具之前，你必须先调用一次 todo_write 把要做的事情拆解成有序任务（status 用「未开始」「进行中」「已完成」三种之一），把即将执行的第一个任务标记为「进行中」。
+2. 每完成一个任务后，再次调用 todo_write 更新状态：把刚完成的任务改为「已完成」，并把下一个要做的任务置为「进行中」。
+3. 同一时间最多只能有一个任务处于「进行中」。
+4. 规划完成后直接采取行动（调用工具），不需要额外解释。`;
 
   await triggerUserPromptSubmit({ input });
 

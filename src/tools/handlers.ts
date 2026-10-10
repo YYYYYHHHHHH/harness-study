@@ -2,6 +2,13 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, glob as fsGlob } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
+import chalk from 'chalk';
+
+export type TodoStatus = '未开始' | '进行中' | '已完成';
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+}
 
 const execAsync = promisify(exec);
 const WORKDIR = process.cwd();
@@ -54,4 +61,33 @@ export async function runGlob(pattern: string): Promise<string> {
     results.push(entry);
   }
   return results.length ? results.join('\n') : '(no matches)';
+}
+
+export async function runTodoWrite(todos: TodoItem[]): Promise<string> {
+  const lines = todos.map((todo, index) => {
+    const num = chalk.gray(`${index + 1}.`);
+    let icon: string;
+    let text: string;
+    switch (todo.status) {
+      case '已完成':
+        icon = chalk.green('✔');
+        text = chalk.gray.strikethrough(todo.content);
+        break;
+      case '进行中':
+        icon = chalk.yellow('◐');
+        text = chalk.white.bold(todo.content);
+        break;
+      default:
+        icon = chalk.gray('○');
+        text = chalk.white(todo.content);
+    }
+    const tag = chalk.gray(`[${todo.status}]`);
+    return `  ${num} ${icon} ${text} ${tag}`;
+  });
+
+  const header = chalk.cyan.bold('📋 TODO 计划');
+  console.log('\n' + header);
+  console.log(lines.join('\n') + '\n');
+
+  return JSON.stringify({ ok: true, count: todos.length, todos });
 }

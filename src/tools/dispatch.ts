@@ -1,4 +1,7 @@
-import { runBash, runRead, runWrite, runEdit, runGlob } from './handlers.js';
+import { runBash, runRead, runWrite, runEdit, runGlob, runTodoWrite } from './handlers.js';
+import type { TodoItem, TodoStatus } from './handlers.js';
+
+const TODO_STATUSES: readonly TodoStatus[] = ['未开始', '进行中', '已完成'];
 
 function requireString(args: Record<string, unknown>, key: string, toolName: string): string {
   const value = args[key];
@@ -39,6 +42,30 @@ export async function dispatchTool(name: string, argumentsJson: string): Promise
       );
     case 'glob':
       return runGlob(requireString(args, 'pattern', 'glob'));
+    case 'todo_write': {
+      const todosRaw = args.todos;
+      if (!Array.isArray(todosRaw)) {
+        throw new Error('todo_write 的 todos 参数必须是数组');
+      }
+      const todos: TodoItem[] = todosRaw.map((item, idx) => {
+        if (typeof item !== 'object' || item === null) {
+          throw new Error(`todo_write 的 todos[${idx}] 不是对象`);
+        }
+        const obj = item as Record<string, unknown>;
+        const content = obj.content;
+        const status = obj.status;
+        if (typeof content !== 'string') {
+          throw new Error(`todo_write 的 todos[${idx}].content 必须是字符串`);
+        }
+        if (typeof status !== 'string' || !TODO_STATUSES.includes(status as TodoStatus)) {
+          throw new Error(
+            `todo_write 的 todos[${idx}].status 必须是 ${TODO_STATUSES.join('/')} 之一`,
+          );
+        }
+        return { content, status: status as TodoStatus };
+      });
+      return runTodoWrite(todos);
+    }
     default:
       throw new Error(`未知工具：${name}`);
   }
