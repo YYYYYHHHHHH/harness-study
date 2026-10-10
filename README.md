@@ -38,7 +38,16 @@ const result = await runAgent({
 
 ## Skills
 
-在工作区根目录（启动时的 `process.cwd()`）下创建 `skills/<目录名>/skill.md`，例如 `skills/code_reivew/skill.md`：
+仓库已内置两个 skill，启动 agent 时自动发现，匹配任务后通过 `load_skill` 加载：
+
+| 名称 | 用途 | 示例请求 |
+| --- | --- | --- |
+| `code_review` | 检查代码规范、类型安全、错误处理和测试覆盖，默认只审查不修改 | `请检查当前改动是否符合代码规范` |
+| `commit` | 检查并提交指定改动，明确要求时推送到远程 | `请提交本次改动并 push 到当前分支的 upstream` |
+
+`commit` 只在明确要求 push 时推送；遇到范围或远程目标不明确、检查失败、冲突等情况会停止并确认，不自动强推或改写历史。新增或修改 skill 后，在下一次 agent 启动时生效。
+
+在工作区根目录（启动时的 `process.cwd()`）下创建 `skills/<目录名>/skill.md`，例如 `skills/code_review/skill.md`：
 
 ```markdown
 ---
