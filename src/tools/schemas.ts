@@ -1,6 +1,6 @@
-import type { ChatCompletionTool } from 'openai/resources/chat/completions';
+import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 
-export const tools: ChatCompletionTool[] = [
+export const toolSchemas: ChatCompletionFunctionTool[] = [
   {
     type: 'function',
     function: {
@@ -108,6 +108,29 @@ export const tools: ChatCompletionTool[] = [
           },
         },
         required: ['todos'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'spawn_subagent',
+      description:
+        '派发一个子任务给独立运行的 subagent。subagent 会在自己的 agent loop 中完成任务并返回总结结果。适用于：需要隔离上下文的子探索、相对独立且可一次性交付结果的任务。注意：subagent 内部无法再派发 subagent。',
+      parameters: {
+        type: 'object',
+        properties: {
+          subagent_name: {
+            type: 'string',
+            description: 'subagent 的名称/角色标识，仅用于区分显示和提示词',
+          },
+          task: {
+            type: 'string',
+            description: '要交给 subagent 完成的任务的完整描述，包含必要上下文与期望产出',
+          },
+        },
+        required: ['subagent_name', 'task'],
         additionalProperties: false,
       },
     },

@@ -31,24 +31,24 @@ function indent(text: string, prefix = '   │ '): string {
 
 const spinners = new Map<string, Ora>();
 
-registerHook('UserPromptSubmit', ({ input }) => {
-  console.log(chalk.gray('\n用户输入：') + chalk.yellow(input));
+registerHook('UserPromptSubmit', ({ input, logPrefix }) => {
+  console.log(`\n${logPrefix ? logPrefix + ' ' : ''}${chalk.gray('输入：')}${chalk.yellow(input)}`);
 });
 
-registerHook('PreToolUse', ({ name, argumentsJson, toolCallId }) => {
+registerHook('PreToolUse', ({ name, argumentsJson, toolCallId, runId, logPrefix }) => {
   const summary = summarizeArgs(name, argumentsJson);
   const spinner = ora({
-    text: `${chalk.blue('调用工具')} ${chalk.cyan.bold(name)}${summary ? chalk.gray(` — ${truncate(summary, 60)}`) : ''}`,
+    text: `${logPrefix ? logPrefix + ' ' : ''}${chalk.blue('调用工具')} ${chalk.cyan.bold(name)}${summary ? chalk.gray(` — ${truncate(summary, 60)}`) : ''}`,
     spinner: 'dots',
   }).start();
-  spinners.set(toolCallId, spinner);
+  spinners.set(`${runId}:${toolCallId}`, spinner);
 });
 
-registerHook('PostToolUse', ({ name, argumentsJson, toolCallId, ok, result, denied }) => {
+registerHook('PostToolUse', ({ name, argumentsJson, toolCallId, ok, result, denied, runId, logPrefix }) => {
   const summary = summarizeArgs(name, argumentsJson);
-  const statusText = `${chalk.cyan.bold(name)}${summary ? chalk.gray(` — ${truncate(summary, 60)}`) : ''}`;
-  const spinner = spinners.get(toolCallId);
-  spinners.delete(toolCallId);
+  const statusText = `${logPrefix ? logPrefix + ' ' : ''}${chalk.cyan.bold(name)}${summary ? chalk.gray(` — ${truncate(summary, 60)}`) : ''}`;
+  const spinner = spinners.get(`${runId}:${toolCallId}`);
+  spinners.delete(`${runId}:${toolCallId}`);
 
   if (denied) {
     spinner?.warn(`${chalk.yellow('权限拒绝')} ${statusText}`);
@@ -58,10 +58,11 @@ registerHook('PostToolUse', ({ name, argumentsJson, toolCallId, ok, result, deni
     spinner?.fail(`${chalk.red('工具失败')} ${statusText}`);
   }
 
+  const detailPrefix = `${logPrefix ? logPrefix + ' ' : ''}   │ `;
   if (verbose) {
-    console.log(indent(chalk.gray(`args = ${truncate(argumentsJson, 400)}`)));
-    console.log(indent(chalk.gray(`result = ${truncate(result, 800)}`)));
+    console.log(indent(chalk.gray(`args = ${truncate(argumentsJson, 400)}`), detailPrefix));
+    console.log(indent(chalk.gray(`result = ${truncate(result, 800)}`), detailPrefix));
   } else {
-    console.log(chalk.gray('   └ 展开详情请加 --verbose 或设 VERBOSE=1'));
+    console.log(chalk.gray(`${logPrefix ? logPrefix + ' ' : ''}   └ 展开详情请加 --verbose 或设 VERBOSE=1`));
   }
 });

@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
