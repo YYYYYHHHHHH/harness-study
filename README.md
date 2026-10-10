@@ -43,3 +43,19 @@ npm test
 ```
 
 测试使用模拟模型响应，不访问真实 API，覆盖嵌套 agent、上下文隔离、工具限制、权限拒绝、错误处理及轮次统计。
+
+## 自动化测试与 tools 覆盖率
+
+```bash
+npm ci
+npm test
+npm run test:coverage
+npm run check
+```
+
+测试使用 Vitest，文件操作仅针对自动清理的临时目录；bash 成功/失败测试使用本地
+Node 命令，超时通过模拟子进程错误验证。subagent 的 `runAgent` 被 mock，不调用
+真实 LLM 或网络。覆盖率使用 V8，完整纳入 `src/tools/**/*.ts`（包括未被导入的
+文件），不排除生产文件或忽略代码行。命令输出 text 报告，并生成
+`coverage/coverage-summary.json`；整体及每文件行覆盖率门槛均为 70%，未达标时
+命令失败。`coverage/` 是生成物，不纳入版本控制。

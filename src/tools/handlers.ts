@@ -114,7 +114,6 @@ export async function runSpawnSubagent(subagentName: string, task: string, conte
     systemPrompt,
     tools,
     logPrefix: tag,
-    maxRounds: 10,
   });
   if (!result.finished) {
     const error = `subagent「${subagentName}」超过最大轮次 ${result.rounds} 未完成任务`;

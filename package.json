@@ -9,12 +9,15 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7",
+    "@vitest/coverage-v8": "^3.2.7"
   },
   "dependencies": {
     "boxen": "^9.0.0",

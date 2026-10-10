@@ -31,7 +31,7 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, logPrefix = '', maxRounds = 10,
+  client, model, input, systemPrompt, tools, logPrefix = '', maxRounds = 50,
 }: AgentOptions): Promise<AgentResult> {
   if (!Number.isInteger(maxRounds) || maxRounds < 1) {
     throw new Error('maxRounds 必须是正整数');
