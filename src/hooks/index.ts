@@ -1,5 +1,10 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { UsageSnapshot } from '../token-usage.js';
+
+export interface ModelUsageCtx extends HookContext {
+  usage: UsageSnapshot;
+}
 
 export interface HookContext {
   runId: string;
@@ -42,7 +47,10 @@ export type PreToolUseHook = (ctx: PreToolUseCtx) => PreToolUseDecision | Promis
 export type PostToolUseHook = (ctx: PostToolUseCtx) => void | Promise<void>;
 export type StopHook = (ctx: StopCtx) => void | Promise<void>;
 
+export type ModelUsageHook = (ctx: ModelUsageCtx) => void | Promise<void>;
+
 interface Registry {
+  ModelUsage: ModelUsageHook[];
   UserPromptSubmit: UserPromptSubmitHook[];
   PreToolUse: PreToolUseHook[];
   PostToolUse: PostToolUseHook[];
@@ -50,6 +58,7 @@ interface Registry {
 }
 
 const registry: Registry = {
+  ModelUsage: [],
   UserPromptSubmit: [],
   PreToolUse: [],
   PostToolUse: [],
@@ -60,6 +69,7 @@ export function registerHook(kind: 'UserPromptSubmit', hook: UserPromptSubmitHoo
 export function registerHook(kind: 'PreToolUse', hook: PreToolUseHook): void;
 export function registerHook(kind: 'PostToolUse', hook: PostToolUseHook): void;
 export function registerHook(kind: 'Stop', hook: StopHook): void;
+export function registerHook(kind: 'ModelUsage', hook: ModelUsageHook): void;
 export function registerHook(kind: keyof Registry, hook: unknown): void {
   (registry[kind] as unknown[]).push(hook);
 }
@@ -93,4 +103,8 @@ export async function triggerStop(ctx: StopCtx): Promise<void> {
     console.log(`${ctx.logPrefix ? ctx.logPrefix + ' ' : ''}[hook] 调用 Stop #${index + 1}`);
     await hook(ctx);
   }
+}
+
+export async function triggerModelUsage(ctx: ModelUsageCtx): Promise<void> {
+  for (const hook of registry.ModelUsage) await hook(ctx);
 }

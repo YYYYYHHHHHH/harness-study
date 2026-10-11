@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import { registerHook } from './index.js';
+import { formatUsage } from '../token-usage.js';
 
 const verbose = process.env.VERBOSE === '1' || process.argv.includes('--verbose');
 
@@ -65,4 +66,10 @@ registerHook('PostToolUse', ({ name, argumentsJson, toolCallId, ok, result, deni
   } else {
     console.log(chalk.gray(`${logPrefix ? logPrefix + ' ' : ''}   └ 展开详情请加 --verbose 或设 VERBOSE=1`));
   }
+});
+
+registerHook('ModelUsage', ({ usage, logPrefix }) => {
+  formatUsage(usage, logPrefix, verbose).forEach((line, index) => {
+    console.log(index === 0 ? chalk.cyan(line) : chalk.gray(line));
+  });
 });

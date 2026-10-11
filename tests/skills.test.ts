@@ -132,3 +132,26 @@ it('keeps catalogs isolated between runs and does not advertise skills when load
   await runAgent({ client, model: 'test', input: 'task', systemPrompt: 'base', tools });
   expect(scan).toHaveBeenCalledTimes(2);
 });
+
+it('reuses the CLI skill snapshot even if the catalog on disk changes while awaiting input', async () => {
+  await writeSkill('review/skill.md', '---\nname: review\ndescription: CLI catalog\n---\nOriginal body');
+  const skills = await scanSkills(root);
+  await rm(join(root, 'skills'), { recursive: true });
+  const scan = vi.spyOn(skillsModule, 'scanSkills');
+  const create = vi.fn()
+    .mockImplementationOnce(async request => {
+      expect(request.messages[0].content).toContain('CLI catalog');
+      return { choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'load-1', type: 'function', function: { name: 'load_skill', arguments: '{"name":"review"}' } },
+      ] } }] };
+    })
+    .mockImplementationOnce(async request => {
+      expect(request.messages.at(-1).content).toBe('Original body');
+      return { choices: [{ message: { role: 'assistant', content: 'done' } }] };
+    });
+  await runAgent({
+    client: { chat: { completions: { create } } } as unknown as OpenAI,
+    model: 'test', input: 'question', systemPrompt: 'base', tools, skills,
+  });
+  expect(scan).not.toHaveBeenCalled();
+});

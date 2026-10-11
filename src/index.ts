@@ -5,6 +5,8 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { tools } from './tools/index.js';
 import { runAgent } from './agent.js';
+import { scanSkills } from './skills/index.js';
+import { completeSkillReference, formatSkillList, readSkillInput } from './cli/skill-slash.js';
 
 async function main() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -22,7 +24,7 @@ async function main() {
       `${chalk.bold.cyan('✦ Harness Agent')}  ${chalk.gray('v0.1')}\n` +
         `${chalk.gray('模型:')} ${chalk.white(model)}\n` +
         `${chalk.gray('工作区:')} ${chalk.white(process.cwd())}\n\n` +
-        `${chalk.gray('提示：')}${chalk.white('回车提交')}${chalk.gray(' · ')}${chalk.white('Ctrl+C 退出')}${chalk.gray(' · 加 --verbose 查看工具详情')}`,
+        `${chalk.gray('提示：')}${chalk.white('回车提交')}${chalk.gray(' · ')}${chalk.white('/ 列出 skills · Tab 补全')}${chalk.gray(' · ')}${chalk.white('Ctrl+C 退出')}${chalk.gray(' · 加 --verbose 查看工具详情')}`,
       {
         padding: 1,
         margin: { top: 1, bottom: 0, left: 0, right: 0 },
@@ -35,15 +37,37 @@ async function main() {
   );
   console.log(chalk.gray('╭─ ') + chalk.cyan('输入你的问题') + chalk.gray(' ' + '─'.repeat(50)));
 
-  const rl = createInterface({ input: stdin, output: stdout });
-  let input: string;
+  const skills = await scanSkills();
+  const rl = createInterface({
+    input: stdin,
+    output: stdout,
+    completer: line => completeSkillReference(line, skills),
+  });
+  rl.setPrompt(chalk.gray('│ ') + chalk.cyan.bold('❯ '));
+  // readline processes keypresses first; display hints without changing its buffer.
+  // Non-TTY input still supports a standalone '/' line followed by the question.
+  const showSlashHints = (_text: string, key: { sequence?: string }) => {
+    if (key.sequence === '/' && completeSkillReference(rl.line.slice(0, rl.cursor), skills)[1] === '/') {
+      stdout.write('\n' + chalk.cyan(formatSkillList(skills)) + '\n');
+      rl.prompt(true);
+    }
+  };
+  if (stdin.isTTY && stdout.isTTY) stdin.on('keypress', showSlashHints);
+  let input: string | undefined;
   try {
-    process.stdout.write(chalk.gray('│ ') + chalk.cyan.bold('❯ '));
-    input = (await new Promise<string>(resolve => rl.once('line', resolve))).trim() || '列出当前目录下的文件';
+    input = await readSkillInput(rl, skills, {
+      prompt: () => rl.prompt(),
+      list: text => console.log(chalk.cyan(text)),
+      unknown: names => console.warn(chalk.yellow(
+        `未找到 skill：${names.map(name => `/${name}`).join('、')}；已保留原始引用并继续提交。输入 / 可查看可用 skills。`,
+      )),
+    });
   } finally {
+    stdin.off('keypress', showSlashHints);
     rl.close();
   }
   console.log(chalk.gray('╰' + '─'.repeat(60)));
+  if (input === undefined) return;
 
   const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体（主 agent）。
 可用工具：todo_write（写入/更新 TODO 计划）、bash、read_file、write_file、edit_file、glob、spawn_subagent（派发子任务给独立 subagent，返回它的总结）、load_skill（按名称加载 skill 完整正文）。
@@ -55,7 +79,7 @@ async function main() {
 4. 当某个子任务相对独立、可一次性交付结果（例如大段代码搜索、独立调研、隔离的实现），可以使用 spawn_subagent 派发；派发时要在 task 字段里给出完整上下文与期望产出，subagent 返回的字符串就是最终结果。
 5. 规划完成后直接采取行动（调用工具），不需要额外解释。`;
 
-  const result = await runAgent({ client, model, input, systemPrompt, tools });
+  const result = await runAgent({ client, model, input, systemPrompt, tools, skills });
   if (!result.finished) {
     throw new Error(`Agent Loop 超过最大轮次 ${result.rounds}`);
   }

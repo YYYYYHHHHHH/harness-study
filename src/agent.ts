@@ -2,14 +2,16 @@ import type OpenAI from 'openai';
 import { randomUUID } from 'node:crypto';
 import chalk from 'chalk';
 import ora from 'ora';
+import { TokenUsageTracker } from './token-usage.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { dispatchTool, type AgentTool, type ToolContext } from './tools/dispatch.js';
-import { scanSkills, buildSkillsPrompt } from './skills/index.js';
+import { scanSkills, buildSkillsPrompt, type SkillRegistry } from './skills/index.js';
 import {
   triggerUserPromptSubmit,
   triggerPreToolUse,
   triggerPostToolUse,
   triggerStop,
+  triggerModelUsage,
 } from './hooks/index.js';
 import './hooks/logging.js';
 import './hooks/permission.js';
@@ -21,6 +23,7 @@ export interface AgentOptions {
   input: string;
   systemPrompt: string;
   tools: AgentTool[];
+  skills?: SkillRegistry;
   logPrefix?: string;
   maxRounds?: number;
 }
@@ -32,12 +35,13 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, logPrefix = '', maxRounds = 50,
+  client, model, input, systemPrompt, tools, skills: providedSkills, logPrefix = '', maxRounds = 50,
 }: AgentOptions): Promise<AgentResult> {
   if (!Number.isInteger(maxRounds) || maxRounds < 1) {
     throw new Error('maxRounds 必须是正整数');
   }
-  const skills = await scanSkills();
+  const usageTracker = new TokenUsageTracker();
+  const skills = providedSkills ?? await scanSkills();
   const context: ToolContext = { client, model, tools, skills, logPrefix, runId: randomUUID() };
   const skillsPrompt = tools.some(tool => tool.schema.function.name === 'load_skill')
     ? buildSkillsPrompt(skills)
@@ -70,6 +74,7 @@ export async function runAgent({
         spinner.fail(`${tag}${chalk.red('大模型调用失败')}`);
         throw error;
       }
+      await triggerModelUsage({ ...hookContext, usage: usageTracker.record(response.usage) });
       const message = response.choices[0]?.message;
       if (!message) throw new Error('模型未返回消息');
       messages.push(message);
