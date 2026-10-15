@@ -11,7 +11,8 @@ cp .env.example .env
 
 ## 运行结构
 
-- `src/agent.ts`：统一的 `runAgent`，负责消息历史、模型循环、工具执行、hook 生命周期和轮次限制。
+- `src/agent.ts`：统一的 `runAgent`，负责消息历史、模型循环、工具执行、hook 生命周期和每轮调用前的上下文压缩。
+- `src/context-compression.ts`：本地 token 计数、L2/L1 工具压缩、L3 摘要和上下文超长兜底。
 - `src/tools/dispatch.ts`：通用工具分发，只允许调用当前 agent 工具集合中的 handler，并校验 JSON 参数为对象。
 - `src/tools/schemas.ts` / `handlers.ts` / `index.ts`：分别定义工具 schema、实现及参数校验、schema 与 handler 的组装。
 - `src/hooks/`：共用输入、工具前后及停止 hook；通过 `runId` 和 `logPrefix` 区分每次运行。
@@ -28,11 +29,10 @@ const result = await runAgent({
   systemPrompt: '你的角色与工作要求',
   tools, // 每个工具包含 schema 和 handler
   logPrefix: '[agent:example]',
-  maxRounds: 10,
 });
 ```
 
-返回值为 `{ finished, finalContent, rounds }`。耗尽轮次时 `finished` 为 `false`；模型或 hook 异常向上传播；工具异常作为工具结果交回模型。有效配置下的运行会在 `finally` 中触发 Stop hook。
+返回值为 `{ finished, finalContent, rounds }`。不设最大循环次数，持续执行到模型不再调用工具；模型或 hook 异常向上传播；工具异常作为工具结果交回模型。有效配置下的运行会在 `finally` 中触发 Stop hook。
 
 `spawn_subagent` 是 `handlers.ts` 中的普通工具：复用调用方的客户端和模型，配置独立提示词、消息历史和日志前缀，并移除工具集合中的 `spawn_subagent`。子 agent 仍共享工作目录，完成后向主 agent 返回总结。
 
@@ -85,18 +85,34 @@ description: 审查代码改动，检查正确性、潜在回归和测试覆盖�
 
 ```text
 [main] tokens #2  输入 12.4K · 输出 856 · 本次 13.3K · 累计 26.1K
-[main]   └ 上下文 1.24% (12.4K / 1M) · 缓存 4K · 推理 128
+[main]   └ 上下文 1.18% (12.4K / 1.1M) · 缓存 4K · 推理 128
 ```
 
 缺失用量显示 `—`；缓存、推理字段缺失时省略，累计不完整时标记“已知”。加 `--verbose` 或设 `VERBOSE=1` 可查看未缩写的完整单次/累计数值、已知小计及 API 返回的细分字段。缓存、推理属于子项，不重复计入总量。
 
-默认上下文容量按 **1 兆 = 1,000,000 tokens** 设置，可以在 `.env` 中覆盖：
+默认上下文容量为 **1,050,000 tokens**，最大输出为 **128,000 tokens**，可以在 `.env` 中覆盖：
 
 ```dotenv
-OPENAI_CONTEXT_WINDOW_TOKENS=1000000
+OPENAI_CONTEXT_WINDOW_TOKENS=1050000
+OPENAI_MAX_OUTPUT_TOKENS=128000
 ```
 
-占比计算为 **最近一次请求实际 `prompt_tokens / 配置容量 × 100%`**，不是累计 token 消耗的占比；不含该次生成的输出及后续工具结果，因此不代表下一次请求的精确占用。该容量仅用于展示，不意味着所选模型实际支持如此大的窗口；请按提供方模型规格调整。配置必须是正的安全整数。
+占比计算为 **最近一次请求实际 `prompt_tokens / 配置容量 × 100%`**，不是累计 token 消耗的占比；不含该次生成的输出及后续工具结果，因此不代表下一次请求的精确占用。容量同时用于调用前压缩，不意味着所选模型实际支持如此大的窗口；请按提供方模型规格调整。配置必须是正的安全整数，窗口必须大于最大输出加 20,000 tokens 安全余量。
+
+## 上下文压缩
+
+主 agent 和 subagent 在每轮模型请求前使用同一压缩机制，分别维护消息与存储目录。正常任务请求通过 [`max_completion_tokens`](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) 传入配置的最大输出。
+
+- **超过 40%（默认 420,000 tokens）**：先 L2，再 L1；均为本地逻辑，不调用模型、不产生 API token 费用。
+- **L2**：单条工具结果严格大于 50,000 tokens 时，完整正文写入 `.context/tool-results/<runId>/<uuid>-<时间戳>.txt`。结果替换为标记、绝对路径、本地 token 数、前 1,000 个 Unicode 字符预览和重新读取提示；保留 tool call ID。可用现有 `read_file` 等工具读取，不新增检索工具。
+- **L1**：按 L2 处理后的全部工具结果正文计算 token 总量，从最新结果向前累计，保留达到总量 20% 的最少完整条数（跨越边界的整条保留，至少保留最新一条）。更早的正文替换为 `调用结果已被压缩，如果有需要可再次调用。`。已有 L1 占位符和 L2 落盘引用参与统计但不再替换；assistant 的工具名称、参数和调用 ID 保持原样。
+- **L2/L1 后仍超过 80%（默认 840,000 tokens）**：触发 L3。保留 system/developer prompt，使用同一模型总结其余全部对话，再用摘要替换；摘要保留用户目标、约束、关键发现、落盘引用、已完成和未完成事项。被替换的历史先保存到 `.transcripts/<runId>/<uuid>-<时间戳>.jsonl`，一行一条原消息，暂不提供检索能力。
+
+超长错误由 `ContextCompressor.recover(messages)` 兜底。按照 `context window - max output tokens - 20,000 - system prompt tokens` 计算前缀预算，向下取到完整消息边界；assistant 的一组 tool calls 和全部结果作为不可拆分的整体。对前缀执行 L3，再拼接未修改的后续消息，重试当前轮，不重复执行工具。非上下文错误直接向上传播。
+
+L3 使用最多 8,192 tokens（不超过配置的 max output）的摘要输出预算，摘要调用计入当前 agent 的用量。历史过大时分段总结并合并先前摘要；摘要请求自身遇到上下文超长会减小输入后重试。写盘失败、摘要为空/截断、没有可压缩完整消息或摘要未缩短上下文时明确报错，保留原消息，避免无限重试。这些错误保护不限制 agent 正常循环轮数。
+
+计数使用本地 `js-tiktoken`：识别模型时使用对应编码，未知模型/供应商别名回退到 `o200k_base`。消息元数据、工具定义和消息封装开销纳入调用前估算；该估算可能与供应商实际 tokenizer 不同，因此同时保留 API 超长兜底。用量日志继续显示 API 返回的实际 token 数。`.context/` 和 `.transcripts/` 已加入 Git 忽略规则。
 
 ## 验证
 

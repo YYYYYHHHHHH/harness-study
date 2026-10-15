@@ -116,7 +116,7 @@ export async function runSpawnSubagent(subagentName: string, task: string, conte
     logPrefix: tag,
   });
   if (!result.finished) {
-    const error = `subagent「${subagentName}」超过最大轮次 ${result.rounds} 未完成任务`;
+    const error = `subagent「${subagentName}」未完成任务（已执行 ${result.rounds} 轮）`;
     console.log(`${tag} ${chalk.red('✗ ' + error)}`);
     return JSON.stringify({ ok: false, error });
   }

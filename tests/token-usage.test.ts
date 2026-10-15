@@ -19,9 +19,9 @@ beforeEach(() => { vi.stubEnv('OPENAI_CONTEXT_WINDOW_TOKENS', '1000'); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('token usage accounting', () => {
-  it('defaults to literal 1 million tokens and validates overrides', () => {
+  it('defaults to 1,050,000 tokens and validates overrides', () => {
     expect(contextWindowTokens({})).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
-    expect(DEFAULT_CONTEXT_WINDOW_TOKENS).toBe(1_000_000);
+    expect(DEFAULT_CONTEXT_WINDOW_TOKENS).toBe(1_050_000);
     expect(contextWindowTokens({ OPENAI_CONTEXT_WINDOW_TOKENS: '4096' })).toBe(4096);
     for (const raw of ['', ' ', '0', '-2', '1.5', 'nope', 'Infinity', '9007199254740992']) {
       expect(() => contextWindowTokens({ OPENAI_CONTEXT_WINDOW_TOKENS: raw })).toThrow('正的安全整数');
@@ -31,13 +31,13 @@ describe('token usage accounting', () => {
     }
   });
 
-  it('calculates and displays context percentage against the default 1M capacity', () => {
+  it('calculates and displays context percentage against the default 1.05M capacity', () => {
     vi.stubEnv('OPENAI_CONTEXT_WINDOW_TOKENS', undefined);
     const tracker = new TokenUsageTracker();
     tracker.record(usage(500_000, 50));
     const snapshot = tracker.record(usage(12_400, 856));
-    expect(snapshot.context).toEqual({ inputTokens: 12_400, capacityTokens: 1_000_000, percent: 1.24 });
-    expect(formatUsage(snapshot).join('\n')).toContain('上下文 1.24% (12.4K / 1M)');
+    expect(snapshot.context).toEqual({ inputTokens: 12_400, capacityTokens: 1_050_000, percent: 12_400 / 1_050_000 * 100 });
+    expect(formatUsage(snapshot).join('\n')).toContain('上下文 1.18% (12.4K / 1.1M)');
   });
 
   it('separates current prompt from cumulative spend and keeps detail subsets separate', () => {
@@ -103,6 +103,7 @@ describe('token usage accounting', () => {
 });
 
 describe('agent mock API usage logging', () => {
+  beforeEach(() => { vi.stubEnv('OPENAI_CONTEXT_WINDOW_TOKENS', '1000000'); });
   it('logs actual usage on every round, with independent nested subagent counters', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const childCreate = vi.fn(async () => response(usage(30, 5)));
@@ -122,7 +123,7 @@ describe('agent mock API usage logging', () => {
     const lines = log.mock.calls.map(args => args.join(' '));
     expect(lines.some(line => line.includes('[main] tokens') && line.includes('累计 370'))).toBe(true);
     expect(lines.some(line => line.includes('[subagent:test] tokens') && line.includes('累计 35'))).toBe(true);
-    expect(lines.some(line => line.includes('[main]') && line.includes('上下文 20% (200 / 1K)'))).toBe(true);
+    expect(lines.some(line => line.includes('[main]') && line.includes('上下文 0.02% (200 / 1M)'))).toBe(true);
     expect(lines.some(line => line.includes('缓存 10') && line.includes('推理 3'))).toBe(true);
     expect(lines.some(line => line.includes('prompt_tokens_details'))).toBe(false);
     expect(create).toHaveBeenCalledTimes(2);
@@ -135,7 +136,7 @@ describe('agent mock API usage logging', () => {
     await expect(runAgent(options)).resolves.toMatchObject({ finished: true });
     await runAgent(options);
     const lines = log.mock.calls.map(args => args.join(' '));
-    expect(lines.some(line => line.includes('上下文 — (— / 1K)'))).toBe(true);
+    expect(lines.some(line => line.includes('上下文 — (— / 1M)'))).toBe(true);
     expect(lines.filter(line => line.includes('tokens #1'))).toHaveLength(2);
     expect(lines.some(line => line.includes('累计 15'))).toBe(true);
   });

@@ -14,14 +14,15 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7",
-    "@vitest/coverage-v8": "^3.2.7"
+    "vitest": "^3.2.7"
   },
   "dependencies": {
     "boxen": "^9.0.0",
     "chalk": "^6.0.1",
+    "js-tiktoken": "^1.0.21",
     "openai": "^7.23.0",
     "ora": "^9.4.1",
     "yaml": "^2.9.1"

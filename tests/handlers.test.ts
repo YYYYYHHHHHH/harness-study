@@ -118,7 +118,7 @@ describe('subagent orchestration (mocked agent, no LLM/network)', () => {
   it('reports unfinished runs', async () => {
     vi.mocked(runAgent).mockResolvedValue({ finished: false, finalContent: null, rounds: 50 });
     expect(JSON.parse(await runSpawnSubagent('worker', 'task', context))).toEqual({
-      ok: false, error: 'subagent「worker」超过最大轮次 50 未完成任务',
+      ok: false, error: 'subagent「worker」未完成任务（已执行 50 轮）',
     });
   });
   it.each([null, '   '])('uses a fallback for an empty summary (%s)', async finalContent => {

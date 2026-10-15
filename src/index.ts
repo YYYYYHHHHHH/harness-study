@@ -81,7 +81,7 @@ async function main() {
 
   const result = await runAgent({ client, model, input, systemPrompt, tools, skills });
   if (!result.finished) {
-    throw new Error(`Agent Loop 超过最大轮次 ${result.rounds}`);
+    throw new Error(`Agent 未完成任务（已执行 ${result.rounds} 轮）`);
   }
   console.log(
     boxen(chalk.green(result.finalContent ?? ''), {

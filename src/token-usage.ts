@@ -1,7 +1,16 @@
 import type { CompletionUsage } from 'openai/resources/completions';
 
 // This is a user-configured capacity, not model metadata or a claim about provider limits.
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_050_000;
+export const DEFAULT_MAX_OUTPUT_TOKENS = 128_000;
+
+export function maxOutputTokens(env: NodeJS.ProcessEnv = process.env): number {
+  const value = Number(env.OPENAI_MAX_OUTPUT_TOKENS ?? DEFAULT_MAX_OUTPUT_TOKENS);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('OPENAI_MAX_OUTPUT_TOKENS 必须是正的安全整数（tokens）');
+  }
+  return value;
+}
 
 function validateCapacity(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import chalk from 'chalk';
 import ora from 'ora';
 import { TokenUsageTracker } from './token-usage.js';
+import { ContextCompressor, isContextLengthError } from './context-compression.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { dispatchTool, type AgentTool, type ToolContext } from './tools/dispatch.js';
 import { scanSkills, buildSkillsPrompt, type SkillRegistry } from './skills/index.js';
@@ -25,7 +26,6 @@ export interface AgentOptions {
   tools: AgentTool[];
   skills?: SkillRegistry;
   logPrefix?: string;
-  maxRounds?: number;
 }
 
 export interface AgentResult {
@@ -35,11 +35,8 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, skills: providedSkills, logPrefix = '', maxRounds = 50,
+  client, model, input, systemPrompt, tools, skills: providedSkills, logPrefix = '',
 }: AgentOptions): Promise<AgentResult> {
-  if (!Number.isInteger(maxRounds) || maxRounds < 1) {
-    throw new Error('maxRounds 必须是正整数');
-  }
   const usageTracker = new TokenUsageTracker();
   const skills = providedSkills ?? await scanSkills();
   const context: ToolContext = { client, model, tools, skills, logPrefix, runId: randomUUID() };
@@ -48,6 +45,13 @@ export async function runAgent({
     : '';
   const hookContext = { runId: context.runId, logPrefix };
   const tag = logPrefix ? `${logPrefix} ` : '';
+  const compressor = new ContextCompressor({
+    client, model, runId: context.runId, tools: tools.map(tool => tool.schema),
+    onUsage: async usage => {
+      await triggerModelUsage({ ...hookContext, usage: usageTracker.record(usage) });
+    },
+    onEvent: event => console.log(`${tag}[context] ${event}`),
+  });
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt + skillsPrompt },
     { role: 'user', content: input },
@@ -58,17 +62,27 @@ export async function runAgent({
 
   try {
     await triggerUserPromptSubmit({ ...hookContext, input });
-    while (rounds < maxRounds) {
+    while (true) {
       rounds += 1;
       console.log(`\n${tag}${chalk.magenta.bold(`━━━ Round ${rounds} ━━━`)}`);
       const spinner = ora({ text: `${tag}${chalk.gray('大模型思考中...')}`, spinner: 'dots' }).start();
       let response;
       try {
-        response = await client.chat.completions.create({
-          model,
-          messages,
-          ...(tools.length ? { tools: tools.map(tool => tool.schema), tool_choice: 'auto' as const } : {}),
-        });
+        await compressor.prepare(messages);
+        while (true) {
+          try {
+            response = await client.chat.completions.create({
+              model,
+              messages: [...messages],
+              max_completion_tokens: compressor.maxOutput,
+              ...(tools.length ? { tools: tools.map(tool => tool.schema), tool_choice: 'auto' as const } : {}),
+            });
+            break;
+          } catch (error) {
+            if (!isContextLengthError(error)) throw error;
+            await compressor.recover(messages);
+          }
+        }
         spinner.stop();
       } catch (error) {
         spinner.fail(`${tag}${chalk.red('大模型调用失败')}`);
