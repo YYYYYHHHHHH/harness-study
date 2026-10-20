@@ -16,7 +16,6 @@ import {
 } from './hooks/index.js';
 import './hooks/logging.js';
 import './hooks/permission.js';
-import './hooks/summarize.js';
 
 export interface AgentOptions {
   client: OpenAI;
@@ -25,6 +24,8 @@ export interface AgentOptions {
   systemPrompt: string;
   tools: AgentTool[];
   skills?: SkillRegistry;
+  /** Mutable conversation history shared across user turns; omit for an isolated run. */
+  messages?: ChatCompletionMessageParam[];
   logPrefix?: string;
 }
 
@@ -35,7 +36,7 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, skills: providedSkills, logPrefix = '',
+  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, logPrefix = '',
 }: AgentOptions): Promise<AgentResult> {
   const usageTracker = new TokenUsageTracker();
   const skills = providedSkills ?? await scanSkills();
@@ -52,10 +53,9 @@ export async function runAgent({
     },
     onEvent: event => console.log(`${tag}[context] ${event}`),
   });
-  const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: systemPrompt + skillsPrompt },
-    { role: 'user', content: input },
-  ];
+  const messages = history ?? [];
+  if (messages.length === 0) messages.push({ role: 'system', content: systemPrompt + skillsPrompt });
+  messages.push({ role: 'user', content: input });
   let finished = false;
   let finalContent: string | null = null;
   let rounds = 0;
@@ -64,7 +64,6 @@ export async function runAgent({
     await triggerUserPromptSubmit({ ...hookContext, input });
     while (true) {
       rounds += 1;
-      console.log(`\n${tag}${chalk.magenta.bold(`━━━ Round ${rounds} ━━━`)}`);
       const spinner = ora({ text: `${tag}${chalk.gray('大模型思考中...')}`, spinner: 'dots' }).start();
       let response;
       try {
@@ -98,6 +97,8 @@ export async function runAgent({
         finalContent = message.content ?? '';
         break;
       }
+
+      if (message.content?.trim()) console.log(`${tag}${chalk.gray(message.content)}`);
 
       for (const toolCall of toolCalls) {
         if (toolCall.type !== 'function') {

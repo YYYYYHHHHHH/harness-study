@@ -32,10 +32,6 @@ function indent(text: string, prefix = '   │ '): string {
 
 const spinners = new Map<string, Ora>();
 
-registerHook('UserPromptSubmit', ({ input, logPrefix }) => {
-  console.log(`\n${logPrefix ? logPrefix + ' ' : ''}${chalk.gray('输入：')}${chalk.yellow(input)}`);
-});
-
 registerHook('PreToolUse', ({ name, argumentsJson, toolCallId, runId, logPrefix }) => {
   const summary = summarizeArgs(name, argumentsJson);
   const spinner = ora({
@@ -63,8 +59,6 @@ registerHook('PostToolUse', ({ name, argumentsJson, toolCallId, ok, result, deni
   if (verbose) {
     console.log(indent(chalk.gray(`args = ${truncate(argumentsJson, 400)}`), detailPrefix));
     console.log(indent(chalk.gray(`result = ${truncate(result, 800)}`), detailPrefix));
-  } else {
-    console.log(chalk.gray(`${logPrefix ? logPrefix + ' ' : ''}   └ 展开详情请加 --verbose 或设 VERBOSE=1`));
   }
 });
 

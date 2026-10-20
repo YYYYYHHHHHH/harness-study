@@ -83,3 +83,31 @@ it('stops failed context recovery when another summary makes no progress', async
   await expect(runAgent(options(create))).rejects.toThrow('未缩短');
   expect(create).toHaveBeenCalledTimes(4);
 });
+
+
+it('shares full conversation history across questions without duplicating the system prompt', async () => {
+  const create = vi.fn().mockResolvedValueOnce(toolCall())
+    .mockResolvedValueOnce(answer('first answer')).mockResolvedValueOnce(answer('second answer'));
+  const messages: import('openai/resources/chat/completions').ChatCompletionMessageParam[] = [];
+  const config = { ...options(create), messages };
+  await runAgent({ ...config, input: 'first question' });
+  await runAgent({ ...config, input: 'follow-up question' });
+  expect(create.mock.calls[2][0].messages.map((message: { role: string }) => message.role))
+    .toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user']);
+  expect(messages.at(-1)).toMatchObject({ role: 'assistant', content: 'second answer' });
+  expect(messages.filter(message => message.role === 'system')).toHaveLength(1);
+  const output = vi.mocked(console.log).mock.calls.flat().join('\n');
+  expect(output).not.toContain('━━━ Round');
+  expect(output).not.toContain('[stop]');
+  expect(output).not.toContain('展开详情请加');
+  expect(output).not.toContain('输入：');
+});
+
+it('prints model commentary accompanying tool calls', async () => {
+  const response = toolCall();
+  const create = vi.fn().mockResolvedValueOnce({ ...response, choices: [{
+    ...response.choices[0], message: { ...response.choices[0].message, content: '先检查相关文件。' },
+  }] }).mockResolvedValueOnce(answer('finished'));
+  await runAgent(options(create));
+  expect(vi.mocked(console.log).mock.calls.flat().join('\n')).toContain('先检查相关文件。');
+});

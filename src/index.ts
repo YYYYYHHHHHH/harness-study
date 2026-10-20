@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import chalk from 'chalk';
 import boxen from 'boxen';
 import { createInterface } from 'node:readline/promises';
@@ -6,7 +7,7 @@ import { stdin, stdout } from 'node:process';
 import { tools } from './tools/index.js';
 import { runAgent } from './agent.js';
 import { scanSkills } from './skills/index.js';
-import { completeSkillReference, formatSkillList, readSkillInput } from './cli/skill-slash.js';
+import { completeSkillReference, formatSkillList, readSkillInputs } from './cli/skill-slash.js';
 
 async function main() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -53,22 +54,6 @@ async function main() {
     }
   };
   if (stdin.isTTY && stdout.isTTY) stdin.on('keypress', showSlashHints);
-  let input: string | undefined;
-  try {
-    input = await readSkillInput(rl, skills, {
-      prompt: () => rl.prompt(),
-      list: text => console.log(chalk.cyan(text)),
-      unknown: names => console.warn(chalk.yellow(
-        `未找到 skill：${names.map(name => `/${name}`).join('、')}；已保留原始引用并继续提交。输入 / 可查看可用 skills。`,
-      )),
-    });
-  } finally {
-    stdin.off('keypress', showSlashHints);
-    rl.close();
-  }
-  console.log(chalk.gray('╰' + '─'.repeat(60)));
-  if (input === undefined) return;
-
   const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体（主 agent）。
 可用工具：todo_write（写入/更新 TODO 计划）、bash、read_file、write_file、edit_file、glob、spawn_subagent（派发子任务给独立 subagent，返回它的总结）、load_skill（按名称加载 skill 完整正文）。
 
@@ -79,20 +64,34 @@ async function main() {
 4. 当某个子任务相对独立、可一次性交付结果（例如大段代码搜索、独立调研、隔离的实现），可以使用 spawn_subagent 派发；派发时要在 task 字段里给出完整上下文与期望产出，subagent 返回的字符串就是最终结果。
 5. 规划完成后直接采取行动（调用工具），不需要额外解释。`;
 
-  const result = await runAgent({ client, model, input, systemPrompt, tools, skills });
-  if (!result.finished) {
-    throw new Error(`Agent 未完成任务（已执行 ${result.rounds} 轮）`);
+  const messages: ChatCompletionMessageParam[] = [];
+  try {
+    for await (const input of readSkillInputs(rl, skills, {
+      prompt: () => rl.prompt(),
+      list: text => console.log(chalk.cyan(text)),
+      unknown: names => console.warn(chalk.yellow(
+        `未找到 skill：${names.map(name => `/${name}`).join('、')}；已保留原始引用并继续提交。输入 / 可查看可用 skills。`,
+      )),
+    })) {
+      const result = await runAgent({ client, model, input, systemPrompt, tools, skills, messages });
+      if (!result.finished) {
+        throw new Error(`Agent 未完成任务（已执行 ${result.rounds} 轮）`);
+      }
+      console.log(
+        boxen(chalk.green(result.finalContent ?? ''), {
+          title: chalk.green.bold(' 答复 '),
+          titleAlignment: 'left',
+          padding: 1,
+          margin: { top: 1, bottom: 1, left: 0, right: 0 },
+          borderStyle: 'round',
+          borderColor: 'green',
+        }),
+      );
+    }
+  } finally {
+    stdin.off('keypress', showSlashHints);
+    rl.close();
   }
-  console.log(
-    boxen(chalk.green(result.finalContent ?? ''), {
-      title: chalk.green.bold(' 最终答复 '),
-      titleAlignment: 'left',
-      padding: 1,
-      margin: { top: 1, bottom: 1, left: 0, right: 0 },
-      borderStyle: 'round',
-      borderColor: 'green',
-    }),
-  );
 }
 
 main().catch(error => {

@@ -7,7 +7,7 @@ npm install
 cp .env.example .env
 ```
 
-在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL` 和 `OPENAI_API_BASE_URL`，然后运行 `npm start`，在终端输入任务。加 `--verbose` 可查看工具详情：`npm start -- --verbose`。实际模型调用会使用你的 API 额度。
+在 `.env` 填写 `OPENAI_API_KEY`、`OPENAI_MODEL` 和 `OPENAI_API_BASE_URL`，然后运行 `npm start`，在终端输入任务。每次答复后可继续提问，同一会话保留历史消息与工具结果，支持连续追问；Ctrl+C 或 EOF 退出。默认保留模型思考状态、工具调用/结果状态和 token 用量，不再打印 Round 分隔、重复输入、停止统计或每次工具的详情提示。模型在工具调用前返回的说明也会展示。加 `--verbose` 可查看工具详情：`npm start -- --verbose`。实际模型调用会使用你的 API 额度。
 
 ## 运行结构
 
@@ -17,7 +17,7 @@ cp .env.example .env
 - `src/tools/schemas.ts` / `handlers.ts` / `index.ts`：分别定义工具 schema、实现及参数校验、schema 与 handler 的组装。
 - `src/hooks/`：共用输入、工具前后及停止 hook；通过 `runId` 和 `logPrefix` 区分每次运行。
 - `src/skills/`：扫描 skill 文件、解析元信息和正文、生成可用 skills 提示词。
-- `src/index.ts`：CLI 输入、主 agent 配置和最终答复展示。
+- `src/index.ts`：CLI 多轮输入循环、会话历史、主 agent 配置和答复展示。
 
 主 agent 和 subagent 都调用同一个入口：
 
@@ -32,7 +32,7 @@ const result = await runAgent({
 });
 ```
 
-返回值为 `{ finished, finalContent, rounds }`。不设最大循环次数，持续执行到模型不再调用工具；模型或 hook 异常向上传播；工具异常作为工具结果交回模型。有效配置下的运行会在 `finally` 中触发 Stop hook。
+返回值为 `{ finished, finalContent, rounds }`。可选传入 `messages` 数组以跨问题复用会话历史（包含 system、用户输入、模型回复和工具结果，并原地更新压缩后的历史）；不传时仍为独立运行，subagent 默认不共享主会话。不设最大循环次数，持续执行到模型不再调用工具；模型或 hook 异常向上传播；工具异常作为工具结果交回模型。有效配置下的运行会在 `finally` 中触发 Stop hook。
 
 `spawn_subagent` 是 `handlers.ts` 中的普通工具：复用调用方的客户端和模型，配置独立提示词、消息历史和日志前缀，并移除工具集合中的 `spawn_subagent`。子 agent 仍共享工作目录，完成后向主 agent 返回总结。
 

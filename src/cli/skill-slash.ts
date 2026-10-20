@@ -56,12 +56,12 @@ export interface SkillInputCallbacks {
   unknown?(names: string[]): void;
 }
 
-/** Listing is local UI, not an agent request. EOF exits without a default task. */
-export async function readSkillInput(
+/** Keep one input iterator alive across agent turns, including buffered piped lines. */
+export async function* readSkillInputs(
   lines: AsyncIterable<string>,
   skills: SkillRegistry,
   callbacks: SkillInputCallbacks,
-): Promise<string | undefined> {
+): AsyncGenerator<string> {
   callbacks.prompt();
   for await (const line of lines) {
     if (line.trim() === '/') {
@@ -71,7 +71,17 @@ export async function readSkillInput(
     }
     const result = expandSkillReferences(line.trim() || '列出当前目录下的文件', skills);
     if (result.unknownSkills.length) callbacks.unknown?.(result.unknownSkills);
-    return result.input;
+    yield result.input;
+    callbacks.prompt();
   }
+}
+
+/** Read a single question; EOF exits without a default task. */
+export async function readSkillInput(
+  lines: AsyncIterable<string>,
+  skills: SkillRegistry,
+  callbacks: SkillInputCallbacks,
+): Promise<string | undefined> {
+  for await (const input of readSkillInputs(lines, skills, callbacks)) return input;
   return undefined;
 }

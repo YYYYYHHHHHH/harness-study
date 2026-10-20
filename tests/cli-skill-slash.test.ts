@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { createInterface } from 'node:readline/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { scanSkills, type SkillRegistry } from '../src/skills/index.js';
-import { completeSkillReference, expandSkillReferences, formatSkillList, readSkillInput } from '../src/cli/skill-slash.js';
+import { completeSkillReference, expandSkillReferences, formatSkillList, readSkillInput, readSkillInputs } from '../src/cli/skill-slash.js';
 
 const skills: SkillRegistry = new Map([
   ['code_review', { name: 'code_review', description: '检查代码', body: '# Review\n完整步骤\n' }],
@@ -111,4 +111,21 @@ describe('CLI skill slash references', () => {
     expect(await readSkillInput(lines('/'), skills, callbacks)).toBeUndefined();
     expect(await readSkillInput(lines(), skills, callbacks)).toBeUndefined();
   });
+});
+
+
+it('keeps piped questions buffered across delayed agent turns and supports slash commands between turns', async () => {
+  const rl = createInterface({ input: Readable.from(['第一问\n/\n/code_review 第二问\n第三问\n']) });
+  const callbacks = { prompt: vi.fn(), list: vi.fn() };
+  const received: string[] = [];
+  try {
+    for await (const input of readSkillInputs(rl, skills, callbacks)) {
+      received.push(input);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(received).toEqual(['第一问', '# Review\n完整步骤\n 第二问', '第三问']);
+    expect(callbacks.list).toHaveBeenCalledTimes(1);
+  } finally {
+    rl.close();
+  }
 });
