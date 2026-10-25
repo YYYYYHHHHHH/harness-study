@@ -112,10 +112,10 @@ describe('agent mock API usage logging', () => {
         { id: 'child', type: 'function', function: { name: 'example', arguments: '{}' } },
       ] } }], usage: usage(100, 50),
     }).mockResolvedValueOnce(response(usage(200, 20)));
-    const result = await runAgent({ client: clientFor(create), model: 'test', input: 'task', systemPrompt: 'system', tools: [{
+    const result = await runAgent({ memory: false, client: clientFor(create), model: 'test', input: 'task', systemPrompt: 'system', tools: [{
       schema: { type: 'function', function: { name: 'example' } },
       handler: async () => {
-        await runAgent({ client: clientFor(childCreate), model: 'test', input: 'child', systemPrompt: 'child', tools: [], logPrefix: '[subagent:test]' });
+        await runAgent({ memory: false, client: clientFor(childCreate), model: 'test', input: 'child', systemPrompt: 'child', tools: [], logPrefix: '[subagent:test]' });
         return 'child done';
       },
     }] });
@@ -132,7 +132,7 @@ describe('agent mock API usage logging', () => {
   it('continues normally when a compatible provider omits usage and resets each run', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const create = vi.fn().mockResolvedValueOnce(response()).mockResolvedValueOnce(response(usage(10, 5)));
-    const options = { client: clientFor(create), model: 'test', input: 'task', systemPrompt: 'system', tools: [] };
+    const options = { memory: false as const, client: clientFor(create), model: 'test', input: 'task', systemPrompt: 'system', tools: [] };
     await expect(runAgent(options)).resolves.toMatchObject({ finished: true });
     await runAgent(options);
     const lines = log.mock.calls.map(args => args.join(' '));
@@ -144,7 +144,7 @@ describe('agent mock API usage logging', () => {
   it('does not invent usage for failed requests', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const create = vi.fn().mockRejectedValue(new Error('provider unavailable'));
-    await expect(runAgent({ client: clientFor(create), model: 'test', input: 'task', systemPrompt: 'system', tools: [] }))
+    await expect(runAgent({ memory: false, client: clientFor(create), model: 'test', input: 'task', systemPrompt: 'system', tools: [] }))
       .rejects.toThrow('provider unavailable');
     expect(log.mock.calls.some(args => args.join(' ').includes('tokens #'))).toBe(false);
   });

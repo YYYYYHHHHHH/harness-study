@@ -43,6 +43,10 @@ export interface ContextCompressionOptions {
   contextWindow?: number;
   maxOutput?: number;
   countTokens?: TokenCounter;
+  /** Preserve this exact user message object as the current turn's stable anchor. */
+  turnStart?: Message;
+  /** Request-only memory messages also consume context, without entering history. */
+  transientMessages?: () => readonly Message[];
   onUsage?: (usage: CompletionUsage | undefined) => void | Promise<void>;
   onEvent?: (message: string) => void;
 }
@@ -79,7 +83,12 @@ export class ContextCompressor {
   }
 
   contextTokens(messages: readonly Message[]): number {
-    return 3 + this.toolSchemaTokens + messages.reduce((total, message) => total + this.messageTokens(message), 0);
+    return 3 + this.toolSchemaTokens + this.transientTokens()
+      + messages.reduce((total, message) => total + this.messageTokens(message), 0);
+  }
+
+  private transientTokens(): number {
+    return (this.options.transientMessages?.() ?? []).reduce((sum, message) => sum + this.messageTokens(message), 0);
   }
 
   /** L2 before L1. Thresholds are re-evaluated after the free compression pass. */
@@ -133,7 +142,8 @@ export class ContextCompressor {
   async recover(messages: Message[]): Promise<void> {
     const start = this.historyStart(messages);
     const systemTokens = messages.slice(0, start).reduce((sum, message) => sum + this.messageTokens(message), 0);
-    const budget = this.contextWindow - this.maxOutput - SAFETY_MARGIN_TOKENS - systemTokens;
+    const budget = this.contextWindow - this.maxOutput - SAFETY_MARGIN_TOKENS - systemTokens
+      - this.toolSchemaTokens - this.transientTokens();
     let tokens = 0;
     let end = start;
     const pending = new Set<string>();
@@ -181,12 +191,16 @@ export class ContextCompressor {
     const path = await this.save('.transcripts', '.jsonl', transcript);
     const summary = await this.summarize(transcript, messages.slice(0, start));
     const replacement: Message = { role: 'user', content: `[历史对话摘要]\n${summary}\n请依据摘要和后续消息继续完成用户任务。` };
+    // L3 may consume the current turn as well as older turns. Keep its original
+    // object so request-only memory can still be inserted immediately after it.
+    const anchor = this.options.turnStart;
+    const replacements = anchor && history.includes(anchor) ? [anchor, replacement] : [replacement];
     const before = history.reduce((sum, message) => sum + this.messageTokens(message), 0);
-    if (this.messageTokens(replacement) >= before) {
+    if (replacements.reduce((sum, message) => sum + this.messageTokens(message), 0) >= before) {
       throw new Error(`L3 未缩短上下文，停止无效重试；原始记录已保存：${path}`);
     }
     // Commit only after both archive and valid summary succeed. The suffix is untouched.
-    messages.splice(start, end - start, replacement);
+    messages.splice(start, end - start, ...replacements);
     this.options.onEvent?.(`${reason}：${history.length} 条消息已总结，原始记录：${path}`);
   }
 

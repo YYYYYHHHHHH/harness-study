@@ -4,7 +4,9 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { TokenUsageTracker } from './token-usage.js';
 import { ContextCompressor, isContextLengthError } from './context-compression.js';
+import { MemoryManager, memoryMessage, injectMemory } from './memory/index.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { CompletionUsage } from 'openai/resources/completions';
 import { dispatchTool, type AgentTool, type ToolContext } from './tools/dispatch.js';
 import { scanSkills, buildSkillsPrompt, type SkillRegistry } from './skills/index.js';
 import {
@@ -26,8 +28,12 @@ export interface AgentOptions {
   skills?: SkillRegistry;
   /** Mutable conversation history shared across user turns; omit for an isolated run. */
   messages?: ChatCompletionMessageParam[];
+  /** Defaults to a session-local manager; subagents should explicitly disable memory. */
+  memory?: MemoryManager | false;
   logPrefix?: string;
 }
+
+const conversationMemories = new WeakMap<ChatCompletionMessageParam[], MemoryManager>();
 
 export interface AgentResult {
   finished: boolean;
@@ -36,7 +42,7 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, logPrefix = '',
+  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, memory: providedMemory, logPrefix = '',
 }: AgentOptions): Promise<AgentResult> {
   const usageTracker = new TokenUsageTracker();
   const skills = providedSkills ?? await scanSkills();
@@ -46,22 +52,36 @@ export async function runAgent({
     : '';
   const hookContext = { runId: context.runId, logPrefix };
   const tag = logPrefix ? `${logPrefix} ` : '';
+  const messages = history ?? [];
+  const memory = providedMemory === false ? undefined : providedMemory
+    ?? conversationMemories.get(messages) ?? new MemoryManager({ client, model });
+  if (memory) conversationMemories.set(messages, memory);
+  const turnStart: ChatCompletionMessageParam = { role: 'user', content: input };
+  // This transcript only appends originals; compression never receives it.
+  const turnTranscript: ChatCompletionMessageParam[] = [structuredClone(turnStart)];
+  let loadedMemory: ChatCompletionMessageParam | undefined;
+  const onUsage = async (usage: CompletionUsage | undefined) => {
+    await triggerModelUsage({ ...hookContext, usage: usageTracker.record(usage) });
+  };
   const compressor = new ContextCompressor({
     client, model, runId: context.runId, tools: tools.map(tool => tool.schema),
-    onUsage: async usage => {
-      await triggerModelUsage({ ...hookContext, usage: usageTracker.record(usage) });
-    },
+    turnStart: memory ? turnStart : undefined,
+    transientMessages: () => loadedMemory ? [loadedMemory] : [],
+    onUsage,
     onEvent: event => console.log(`${tag}[context] ${event}`),
   });
-  const messages = history ?? [];
   if (messages.length === 0) messages.push({ role: 'system', content: systemPrompt + skillsPrompt });
-  messages.push({ role: 'user', content: input });
+  messages.push(turnStart);
   let finished = false;
   let finalContent: string | null = null;
   let rounds = 0;
 
   try {
     await triggerUserPromptSubmit({ ...hookContext, input });
+    if (memory) {
+      try { loadedMemory = memoryMessage(await memory.load_memory(input, onUsage)); }
+      catch (error) { console.warn(`${tag}[memory] 加载失败，本轮继续：${error instanceof Error ? error.message : String(error)}`); }
+    }
     while (true) {
       rounds += 1;
       const spinner = ora({ text: `${tag}${chalk.gray('大模型思考中...')}`, spinner: 'dots' }).start();
@@ -72,7 +92,7 @@ export async function runAgent({
           try {
             response = await client.chat.completions.create({
               model,
-              messages: [...messages],
+              messages: injectMemory(messages, turnStart, loadedMemory),
               max_completion_tokens: compressor.maxOutput,
               ...(tools.length ? { tools: tools.map(tool => tool.schema), tool_choice: 'auto' as const } : {}),
             });
@@ -91,6 +111,7 @@ export async function runAgent({
       const message = response.choices[0]?.message;
       if (!message) throw new Error('模型未返回消息');
       messages.push(message);
+      turnTranscript.push(structuredClone(message));
       const toolCalls = message.tool_calls ?? [];
       if (toolCalls.length === 0) {
         finished = true;
@@ -127,7 +148,19 @@ export async function runAgent({
           }
         }
         await triggerPostToolUse({ ...toolUse, ok, result: content, denied });
-        messages.push({ role: 'tool', tool_call_id: toolCall.id, content });
+        const toolResult: ChatCompletionMessageParam = { role: 'tool', tool_call_id: toolCall.id, content };
+        messages.push(toolResult);
+        turnTranscript.push(structuredClone(toolResult));
+      }
+    }
+    if (finished && memory) {
+      const spinner = ora({ text: `${tag}提取并整理记忆...`, spinner: 'dots' }).start();
+      try {
+        await memory.finishTurn(turnTranscript, onUsage);
+        spinner.stop();
+      } catch (error) {
+        spinner.stop();
+        console.warn(`${tag}[memory] 更新失败，保留已有记忆：${error instanceof Error ? error.message : String(error)}`);
       }
     }
   } finally {
