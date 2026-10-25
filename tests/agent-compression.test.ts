@@ -31,7 +31,7 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 function options(create: ReturnType<typeof vi.fn>, handler = vi.fn(async () => 'done')) {
-  return { client: { chat: { completions: { create } } } as unknown as OpenAI,
+  return { memory: false as const, client: { chat: { completions: { create } } } as unknown as OpenAI,
     model: 'test', input: 'Complete the task. ' + 'x'.repeat(1000), systemPrompt: 'Keep constraints.',
     tools: [{ schema: { type: 'function' as const, function: { name: 'example' } }, handler }] };
 }

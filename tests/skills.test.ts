@@ -112,6 +112,7 @@ it('injects metadata at agent startup and returns the cached body through the mo
       return { choices: [{ message: { role: 'assistant', content: '完成' } }] };
     });
   const result = await runAgent({
+    memory: false,
     client: { chat: { completions: { create } } } as unknown as OpenAI,
     model: 'test', input: 'review', systemPrompt: '原始系统提示', tools,
   });
@@ -127,9 +128,9 @@ it('keeps catalogs isolated between runs and does not advertise skills when load
     return { choices: [{ message: { role: 'assistant', content: 'done' } }] };
   });
   const client = { chat: { completions: { create } } } as unknown as OpenAI;
-  await runAgent({ client, model: 'test', input: 'task', systemPrompt: 'base', tools: [] });
+  await runAgent({ memory: false, client, model: 'test', input: 'task', systemPrompt: 'base', tools: [] });
   await rm(join(root, 'skills'), { recursive: true });
-  await runAgent({ client, model: 'test', input: 'task', systemPrompt: 'base', tools });
+  await runAgent({ memory: false, client, model: 'test', input: 'task', systemPrompt: 'base', tools });
   expect(scan).toHaveBeenCalledTimes(2);
 });
 
@@ -150,6 +151,7 @@ it('reuses the CLI skill snapshot even if the catalog on disk changes while awai
       return { choices: [{ message: { role: 'assistant', content: 'done' } }] };
     });
   await runAgent({
+    memory: false,
     client: { chat: { completions: { create } } } as unknown as OpenAI,
     model: 'test', input: 'question', systemPrompt: 'base', tools, skills,
   });

@@ -118,6 +118,7 @@ export async function runSpawnSubagent(subagentName: string, task: string, conte
     tools,
     logPrefix: tag,
     agentId: `subagent:${subagentName}:${randomUUID()}`,
+    memory: false,
   });
   if (!result.finished) {
     const error = `subagent「${subagentName}」未完成任务（已执行 ${result.rounds} 轮）`;
