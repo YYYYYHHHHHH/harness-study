@@ -138,3 +138,52 @@ Node 命令，超时通过模拟子进程错误验证。subagent 的 `runAgent` 
 文件），不排除生产文件或忽略代码行。命令输出 text 报告，并生成
 `coverage/coverage-summary.json`；整体及每文件行覆盖率门槛均为 70%，未达标时
 命令失败。`coverage/` 是生成物，不纳入版本控制。
+
+## 跨会话持久化任务系统
+
+主 agent 和 subagent 均可使用下面四个工具。**接口名称及状态拼写按约定保留**：
+`clamic_task`、`complate_tasks`、`wait`、`procing`、`compleate`。
+
+```json
+{"tasks":[
+  {"taskid":"design","description":"设计接口","status":"wait","depends":[]},
+  {"taskid":"implement","description":"实现接口","status":"wait","depends":["design"]}
+]}
+```
+
+上面是 `create_tasks` 的参数。`tasks` 必须为非空数组；`taskid`、`description` 为非空字符串，
+`status` 和 `depends` 必填。新任务通常使用 `wait`；也支持导入 `procing` / `compleate` 状态，
+创建时 `owner` 一律为 `null`，不可由模型指定。taskid 在当前工作区全局唯一。
+依赖必须已存在或在同一创建批次中给出，支持前向引用，拒绝自依赖、循环和重复 ID。
+
+| 工具 | 参数示例 | 行为 |
+| --- | --- | --- |
+| `create_tasks` | 上面的 `{ "tasks": [...] }` | 创建任务，返回 `{ok:true,tasks:[...]}` |
+| `clamic_task` | `{ "task_id": "design" }` | 校验无 owner、状态为 wait、依赖全为 compleate；成功写入当前 agent owner 和 procing，返回 `{ok:true,task:{...}}` |
+| `get_tasks_detail` | `{ "task_id": ["design", "implement"] }` | 按 ID 输入顺序返回 `{ok:true,tasks:[...]}`；省略参数 `{}` 查询全部；空数组返回空列表；不存在的 ID 报错 |
+| `complate_tasks` | `{ "task_id": ["design"] }` | 标记为 compleate、保留 owner，返回 `{ok:true,tasks:[...]}`；重复完成幂等 |
+
+owner 来源于运行时 agent 身份，不接受模型指定。CLI 每次启动生成唯一主 agent ID，
+连续输入的多轮对话复用同一 ID；每次子 agent 调用生成独立 ID。任务文件跨进程、跨会话保留；
+重新启动不会自动重新领取或释放旧 owner。完成工具按协议只按 ID 完成，不额外限制原状态或 owner。
+
+任务保存在 **启动工作目录** 的 `.task/`，每个任务一个 `时间戳-随机UUID.json` 文件，
+包含 `taskid`、`description`、`status`、`depends`、`owner`。文件名与任务 ID 分离，更新保留原文件名。
+`.task/` 已加入 Git 忽略；不自动删除任务。损坏文件会明确报错，不会静默当作空列表。
+
+所有读写通过同一个 `.task/.lock` 目录锁串行化，单任务更新采用同目录临时文件 + rename，
+避免并发重复领取和半写 JSON。等待锁最多 5 秒，不会自动抢夺慢进程持有的锁；若进程崩溃留下锁，
+必须确认没有进程正在使用后手动移除 `.task/.lock`。批量创建/完成在写入前校验全部输入；
+多个文件不是数据库事务，磁盘错误或进程中断可能造成批次部分落盘，应查询现有状态后重试。
+任务目录和 JSON 文件不接受符号链接。文件锁用于遵守本协议的进程，不防御绕过工具直接改文件的外部程序。
+
+验证不调用真实模型 API：
+
+```bash
+npm run check
+npm test
+npm run test:coverage
+```
+
+任务系统测试覆盖参数校验、持久化重读、依赖校验、循环依赖、状态转换、重复领取、跨进程抢占、
+异常锁释放、损坏文件及工具 handler 接入。

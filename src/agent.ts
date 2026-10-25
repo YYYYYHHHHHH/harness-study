@@ -27,6 +27,8 @@ export interface AgentOptions {
   /** Mutable conversation history shared across user turns; omit for an isolated run. */
   messages?: ChatCompletionMessageParam[];
   logPrefix?: string;
+  /** Stable main identity across user turns; subagents receive unique identities. */
+  agentId?: string;
 }
 
 export interface AgentResult {
@@ -36,11 +38,11 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, logPrefix = '',
+  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, logPrefix = '', agentId = `agent:${randomUUID()}`,
 }: AgentOptions): Promise<AgentResult> {
   const usageTracker = new TokenUsageTracker();
   const skills = providedSkills ?? await scanSkills();
-  const context: ToolContext = { client, model, tools, skills, logPrefix, runId: randomUUID() };
+  const context: ToolContext = { client, model, tools, skills, logPrefix, agentId, runId: randomUUID() };
   const skillsPrompt = tools.some(tool => tool.schema.function.name === 'load_skill')
     ? buildSkillsPrompt(skills)
     : '';

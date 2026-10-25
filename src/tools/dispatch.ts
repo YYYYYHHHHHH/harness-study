@@ -9,6 +9,7 @@ export interface ToolContext {
   skills: SkillRegistry;
   logPrefix: string;
   runId: string;
+  agentId?: string;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, context: ToolContext) => Promise<string>;

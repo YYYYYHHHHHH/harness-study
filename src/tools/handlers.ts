@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { taskHandlers } from './tasks.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, glob as fsGlob } from 'node:fs/promises';
@@ -105,8 +107,9 @@ export async function runSpawnSubagent(subagentName: string, task: string, conte
 工作要求：
 1. 仅聚焦主 agent 交给你的本次任务，不要越权做无关的事。
 2. 开始动手前先用 todo_write 规划步骤，并按 未开始/进行中/已完成 更新状态；同一时间最多一个「进行中」。
-3. 遇到无法完成的情况，诚实说明原因与已尝试的步骤。
-4. 完成后，用一段清晰、紧凑的中文总结输出最终结果——这段文本会直接作为工具返回值交给主 agent，所以要点要齐全、不要冗余过程日志。`;
+3. 跨会话或依赖任务使用 get_tasks_detail 查看、create_tasks 创建、clamic_task 领取、complate_tasks 完成；领取前确认依赖，只有实际完成后才标记完成。
+4. 遇到无法完成的情况，诚实说明原因与已尝试的步骤。
+5. 完成后，用一段清晰、紧凑的中文总结输出最终结果——这段文本会直接作为工具返回值交给主 agent，所以要点要齐全、不要冗余过程日志。`;
   const result = await runAgent({
     client: context.client,
     model: context.model,
@@ -114,6 +117,7 @@ export async function runSpawnSubagent(subagentName: string, task: string, conte
     systemPrompt,
     tools,
     logPrefix: tag,
+    agentId: `subagent:${subagentName}:${randomUUID()}`,
   });
   if (!result.finished) {
     const error = `subagent「${subagentName}」未完成任务（已执行 ${result.rounds} 轮）`;
@@ -182,4 +186,5 @@ export const toolHandlers: Record<string, ToolHandler> = {
     if (!skill) throw new Error(`未找到 skill：${name}。请使用 system prompt 中列出的 skill name。`);
     return skill.body;
   },
+  ...taskHandlers,
 };

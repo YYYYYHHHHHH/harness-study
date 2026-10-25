@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import chalk from 'chalk';
@@ -55,15 +56,17 @@ async function main() {
   };
   if (stdin.isTTY && stdout.isTTY) stdin.on('keypress', showSlashHints);
   const systemPrompt = `你是一个在 ${process.cwd()} 工作区的代码智能体（主 agent）。
-可用工具：todo_write（写入/更新 TODO 计划）、bash、read_file、write_file、edit_file、glob、spawn_subagent（派发子任务给独立 subagent，返回它的总结）、load_skill（按名称加载 skill 完整正文）。
+可用工具：todo_write（写入/更新 TODO 计划）、bash、read_file、write_file、edit_file、glob、spawn_subagent（派发子任务给独立 subagent，返回它的总结）、load_skill（按名称加载 skill 完整正文）、create_tasks、clamic_task、get_tasks_detail、complate_tasks（持久化任务系统）。
 
 重要规则：
 1. 在执行任何其他工具之前，你必须先调用一次 todo_write 把要做的事情拆解成有序任务（status 用「未开始」「进行中」「已完成」三种之一），把即将执行的第一个任务标记为「进行中」。
 2. 每完成一个任务后，再次调用 todo_write 更新状态：把刚完成的任务改为「已完成」，并把下一个要做的任务置为「进行中」。
 3. 同一时间最多只能有一个任务处于「进行中」。
 4. 当某个子任务相对独立、可一次性交付结果（例如大段代码搜索、独立调研、隔离的实现），可以使用 spawn_subagent 派发；派发时要在 task 字段里给出完整上下文与期望产出，subagent 返回的字符串就是最终结果。
-5. 规划完成后直接采取行动（调用工具），不需要额外解释。`;
+5. 多步骤或跨会话任务使用持久化任务工具：先 get_tasks_detail 查看已有任务，再 create_tasks 建立依赖任务；执行前 clamic_task 领取，成功后 complate_tasks 完成。新任务通常用 wait 状态；owner 自动来自当前 agent，不得伪造。保留 todo_write 用于当前回合展示。
+6. 规划完成后直接采取行动（调用工具），不需要额外解释。`;
 
+  const agentId = `main:${randomUUID()}`;
   const messages: ChatCompletionMessageParam[] = [];
   try {
     for await (const input of readSkillInputs(rl, skills, {
@@ -73,7 +76,7 @@ async function main() {
         `未找到 skill：${names.map(name => `/${name}`).join('、')}；已保留原始引用并继续提交。输入 / 可查看可用 skills。`,
       )),
     })) {
-      const result = await runAgent({ client, model, input, systemPrompt, tools, skills, messages });
+      const result = await runAgent({ client, model, input, systemPrompt, tools, skills, messages, agentId });
       if (!result.finished) {
         throw new Error(`Agent 未完成任务（已执行 ${result.rounds} 轮）`);
       }

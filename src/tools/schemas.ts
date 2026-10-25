@@ -151,3 +151,31 @@ export const toolSchemas: ChatCompletionFunctionTool[] = [
     },
   },
 ];
+
+// Preserve the public tool/status spellings requested by the task protocol.
+const taskIds = { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true };
+toolSchemas.push(
+  { type: 'function', function: {
+    name: 'create_tasks', description: '创建跨会话持久化任务，保存在工作区 .task/；依赖可引用已有任务或同批任务。',
+    parameters: { type: 'object', properties: { tasks: {
+      type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false,
+        properties: {
+          taskid: { type: 'string', minLength: 1 }, description: { type: 'string', minLength: 1 },
+          status: { type: 'string', enum: ['wait', 'procing', 'compleate'] }, depends: taskIds,
+        }, required: ['taskid', 'description', 'status', 'depends'],
+      },
+    } }, required: ['tasks'], additionalProperties: false },
+  } },
+  { type: 'function', function: {
+    name: 'clamic_task', description: '领取一个 wait 且无 owner、所有依赖均已 compleate 的任务。自动设置当前 agent owner 和 procing 状态。',
+    parameters: { type: 'object', properties: { task_id: { type: 'string', minLength: 1 } }, required: ['task_id'], additionalProperties: false },
+  } },
+  { type: 'function', function: {
+    name: 'get_tasks_detail', description: '按 task_id 数组查询持久化任务；省略 task_id 查询所有任务，空数组返回空列表。',
+    parameters: { type: 'object', properties: { task_id: taskIds }, required: [], additionalProperties: false },
+  } },
+  { type: 'function', function: {
+    name: 'complate_tasks', description: '按 task_id 数组把任务标记为 compleate，保留 owner；重复完成幂等。',
+    parameters: { type: 'object', properties: { task_id: { ...taskIds, minItems: 1 } }, required: ['task_id'], additionalProperties: false },
+  } },
+);
