@@ -39,6 +39,44 @@ const result = await runAgent({
 
 `spawn_subagent` 是 `handlers.ts` 中的普通工具：复用调用方的客户端和模型，配置独立提示词、消息历史和日志前缀，并移除工具集合中的 `spawn_subagent`。子 agent 仍共享工作目录，完成后向主 agent 返回总结。
 
+## 每轮上下文快照
+
+每次 agent loop 完成模型调用和本轮全部工具执行后，自动把当前完整的 `messages` 数组保存为格式化 JSON：
+
+```text
+.context/messages/<runId>/round-0001.json
+.context/messages/<runId>/round-0002.json
+```
+
+最终答复和异常退出的循环也会保存；异常时记录截至出错位置的上下文。每次 `runAgent` 调用有独立的 `runId`，
+主 agent、subagent 和后续用户轮次的文件不会互相覆盖。快照包括 system、user、assistant、tool 消息及已注入的后台任务通知，
+反映该次循环结束时的上下文压缩状态，不包含只在请求时临时注入的参考记忆。
+保存完成后才进入下一次循环；写入失败会打印警告，不中断 agent，也不覆盖原始执行错误。
+文件位于启动本次运行时的工作目录下，`.context/` 已被 Git 忽略。
+
+## Bash 后台任务
+
+`bash({command: "npm test", is_slow: true})` 会启动异步子进程，立即返回工具结果
+`[任务已在后台执行中]bgid：<任务 UUID>`。省略 `is_slow` 或传 `false` 时等待执行结束。
+两种模式都沿用 120 秒超时、stdout/stderr 合并以及成功输出最多 50,000 字符的规则，执行前仍经过权限检查。
+
+每个会话的 `bg_task_map` 以任务 UUID 为键，记录 `command`、`started_at`（毫秒时间戳）、
+`bg_task_id`、`status`（`running` / `completed` / `failed`）、`result`（运行中为 `null`）、
+`origin_tool_id`（原始 tool call ID）和 `notified`。可通过 `runAgent({bg_task_map, ...})` 显式传入 Map 以查看记录；
+默认随同一个 `messages` 数组跨轮次复用，独立会话及 subagent 各自隔离。
+
+每次 agent loop 开始、上下文压缩之前，检查已完成或失败且尚未通知的任务，分别追加一条 `role: 'user'` 消息：
+
+```xml
+<notify_bg_task><task_id>任务 UUID</task_id><task_result>命令执行结果</task_result><origin_tool_id>原始 tool call ID</origin_tool_id></notify_bg_task>
+```
+
+XML 字段会转义特殊字符并替换 XML 不支持的控制字符；Map 保留原始结果。
+通知在整组工具结果之后插入，也进入本轮原始记忆记录，每个任务只注入一次。
+如果任务在模型生成最终答复期间完成，继续下一次循环处理通知。
+如果答复时任务仍在运行，本轮正常结束，结果在同一会话的下一轮载入；后台任务不主动唤醒空闲 agent。
+任务仅保存在当前进程内存中，不支持应用重启恢复。
+
 ## 定时调度
 
 CLI 启动时加载工作区 `.cron/jobs.json`，初始化 Worker 内的 `cron_jobs`。

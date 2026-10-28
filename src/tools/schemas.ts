@@ -5,11 +5,12 @@ export const toolSchemas: ChatCompletionFunctionTool[] = [
     type: 'function',
     function: {
       name: 'bash',
-      description: 'Run a shell command.',
+      description: 'Run a shell command. With is_slow=true, return a background task ID immediately; a later agent loop delivers the result in a notify_bg_task user message. Commands time out after 120 seconds.',
       parameters: {
         type: 'object',
         properties: {
           command: { type: 'string' },
+          is_slow: { type: 'boolean', description: '是否在后台执行；默认 false，等待命令结束。true 时立即返回 bgid，完成后通过 XML 通知结果。' },
         },
         required: ['command'],
         additionalProperties: false,

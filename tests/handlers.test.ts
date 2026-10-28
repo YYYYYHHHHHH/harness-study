@@ -9,6 +9,7 @@ import { runAgent } from '../src/agent.js';
 import { tools } from '../src/tools/index.js';
 import { dispatchTool, type ToolContext } from '../src/tools/dispatch.js';
 import { runBash, runEdit, runGlob, runRead, runSpawnSubagent, runTodoWrite, runWrite } from '../src/tools/handlers.js';
+import type { BackgroundTaskMap } from '../src/background-tasks.js';
 
 const context: ToolContext = {
   client: {} as OpenAI, model: 'test-model', tools, logPrefix: '[test]', runId: 'test', skills: new Map(),
@@ -65,6 +66,23 @@ it('executes local commands, combines streams, handles empty output and nonzero 
   expect(await runBash(`${node} -e ""`)).toBe('(no output)');
   expect(await runBash(`${node} -e "process.stdout.write('x'.repeat(50001))"`)).toHaveLength(50000);
   expect(await runBash(`${node} -e "process.exit(2)"`)).toMatch(/^Error: Command failed:/);
+  expect(await dispatch('bash', { command: 'printf foreground', is_slow: false })).toBe('foreground');
+});
+
+it.each([
+  ['printf background', 'completed', 'background'],
+  ['printf failure >&2; exit 2', 'failed', 'failure'],
+])('executes background commands through dispatch: %s', async (command, status, output) => {
+  const bg_task_map: BackgroundTaskMap = new Map();
+  const response = await dispatchTool('bash', JSON.stringify({ command, is_slow: true }), {
+    ...context, bg_task_map, toolCallId: 'background-call',
+  });
+  const [task] = [...bg_task_map.values()];
+  expect(response).toBe(`[任务已在后台执行中]bgid：${task.bg_task_id}`);
+  expect(task.status).toBe('running');
+  await vi.waitFor(() => expect(task.status).toBe(status));
+  expect(task.result).toContain(output);
+  expect(task.origin_tool_id).toBe('background-call');
 });
 
 it('renders each TODO status and returns structured data with and without prefix', async () => {
@@ -81,6 +99,9 @@ it('renders each TODO status and returns structured data with and without prefix
 
 it.each([
   ['bash', {}, /command 参数无效/],
+  ['bash', { command: 'echo test', is_slow: 'true' }, /is_slow 参数必须是布尔值/],
+  ['bash', { command: 'echo test', is_slow: null }, /is_slow 参数必须是布尔值/],
+  ['bash', { command: 'echo test', is_slow: true }, /后台 bash 需要/],
   ['read_file', { path: 1 }, /path 参数无效/],
   ['read_file', { path: 'x', limit: '2' }, /limit 参数必须是数字/],
   ['write_file', { path: 'x', content: null }, /content 参数无效/],

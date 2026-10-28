@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { taskHandlers } from './tasks.js';
 import { cronHandlers } from './cron.js';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import { readFile, writeFile, glob as fsGlob } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
 import chalk from 'chalk';
 import { runAgent } from '../agent.js';
 import type { ToolContext, ToolHandler } from './dispatch.js';
+import { runBash } from './bash.js';
+import { startBackgroundBash } from '../background-tasks.js';
+
+export { runBash } from './bash.js';
 
 export type TodoStatus = '未开始' | '进行中' | '已完成';
 export interface TodoItem {
@@ -15,27 +17,10 @@ export interface TodoItem {
   status: TodoStatus;
 }
 
-const execAsync = promisify(exec);
 const WORKDIR = process.cwd();
 
 function toAbsolute(path: string): string {
   return isAbsolute(path) ? path : resolve(WORKDIR, path);
-}
-
-export async function runBash(command: string): Promise<string> {
-  try {
-    const { stdout, stderr } = await execAsync(command, {
-      cwd: WORKDIR,
-      timeout: 120000,
-    });
-    const out = (stdout + stderr).trim();
-    return out ? out.slice(0, 50000) : '(no output)';
-  } catch (error: any) {
-    if (error.killed) {
-      return 'Error: Timeout (120s)';
-    }
-    return `Error: ${error.message}`;
-  }
 }
 
 export async function runRead(path: string, limit?: number): Promise<string> {
@@ -141,7 +126,19 @@ function requireString(args: Record<string, unknown>, key: string, toolName: str
 }
 
 export const toolHandlers: Record<string, ToolHandler> = {
-  bash: args => runBash(requireString(args, 'command', 'bash')),
+  bash: async (args, context) => {
+    const command = requireString(args, 'command', 'bash');
+    if (args.is_slow !== undefined && typeof args.is_slow !== 'boolean') {
+      throw new Error('bash 的 is_slow 参数必须是布尔值');
+    }
+    if (args.is_slow === true) {
+      if (!context.bg_task_map || !context.toolCallId) {
+        throw new Error('后台 bash 需要 bg_task_map 和 origin tool call ID');
+      }
+      return startBackgroundBash(context.bg_task_map, command, context.toolCallId);
+    }
+    return runBash(command);
+  },
   read_file: args => {
     const path = requireString(args, 'path', 'read_file');
     const limit = args.limit;

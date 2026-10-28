@@ -2,6 +2,7 @@ import type OpenAI from 'openai';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 import type { SkillRegistry } from '../skills/index.js';
 import type { CronJobService } from '../cron/types.js';
+import type { BackgroundTaskMap } from '../background-tasks.js';
 
 export interface ToolContext {
   client: OpenAI;
@@ -12,6 +13,8 @@ export interface ToolContext {
   runId: string;
   agentId?: string;
   cron?: CronJobService;
+  bg_task_map?: BackgroundTaskMap;
+  toolCallId?: string;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, context: ToolContext) => Promise<string>;
