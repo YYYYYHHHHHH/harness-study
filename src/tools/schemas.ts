@@ -179,3 +179,24 @@ toolSchemas.push(
     parameters: { type: 'object', properties: { task_id: { ...taskIds, minItems: 1 } }, required: ['task_id'], additionalProperties: false },
   } },
 );
+
+toolSchemas.push(
+  { type: 'function', function: {
+    name: 'create_cron_job',
+    description: '创建定时任务，返回自动生成的 id。到期后等待主 agent 空闲，将 prompt 作为新消息执行；drauble=true 持久化到 .cron/。',
+    parameters: { type: 'object', properties: {
+      prompt: { type: 'string', minLength: 1, description: '到期时交给主 agent 执行的任务描述/消息' },
+      drauble: { type: 'boolean', description: '是否持久化，true 时应用重启后恢复' },
+      recurring: { type: 'boolean', description: 'true 重复执行；false 只在下一次到期时执行一次' },
+      cron: { type: 'string', minLength: 1, description: '五字段 cron，或六字段（秒 分 时 日 月 周）；使用应用本地时区' },
+    }, required: ['prompt', 'drauble', 'recurring', 'cron'], additionalProperties: false },
+  } },
+  { type: 'function', function: {
+    name: 'cancel_cron_job', description: '按 id 取消定时任务，同时移除待消费项及持久化记录；已经开始的执行不会被中断。',
+    parameters: { type: 'object', properties: { id: { type: 'string', minLength: 1 } }, required: ['id'], additionalProperties: false },
+  } },
+  { type: 'function', function: {
+    name: 'list_cron_job', description: '列出当前全部定时任务（包括未持久化任务）、下次时间和 scheduled/queued/running 状态。',
+    parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+  } },
+);

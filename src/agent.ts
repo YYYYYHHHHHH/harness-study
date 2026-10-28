@@ -33,6 +33,7 @@ export interface AgentOptions {
   logPrefix?: string;
   /** Stable main identity across user turns; subagents receive unique identities. */
   agentId?: string;
+  cron?: ToolContext['cron'];
 }
 
 const conversationMemories = new WeakMap<ChatCompletionMessageParam[], MemoryManager>();
@@ -44,11 +45,11 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, memory: providedMemory, logPrefix = '', agentId = `agent:${randomUUID()}`,
+  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, memory: providedMemory, logPrefix = '', agentId = `agent:${randomUUID()}`, cron,
 }: AgentOptions): Promise<AgentResult> {
   const usageTracker = new TokenUsageTracker();
   const skills = providedSkills ?? await scanSkills();
-  const context: ToolContext = { client, model, tools, skills, logPrefix, agentId, runId: randomUUID() };
+  const context: ToolContext = { client, model, tools, skills, logPrefix, agentId, runId: randomUUID(), cron };
   const skillsPrompt = tools.some(tool => tool.schema.function.name === 'load_skill')
     ? buildSkillsPrompt(skills)
     : '';

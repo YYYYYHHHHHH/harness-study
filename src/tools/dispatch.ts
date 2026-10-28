@@ -1,6 +1,7 @@
 import type OpenAI from 'openai';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 import type { SkillRegistry } from '../skills/index.js';
+import type { CronJobService } from '../cron/types.js';
 
 export interface ToolContext {
   client: OpenAI;
@@ -10,6 +11,7 @@ export interface ToolContext {
   logPrefix: string;
   runId: string;
   agentId?: string;
+  cron?: CronJobService;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, context: ToolContext) => Promise<string>;

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { taskHandlers } from './tasks.js';
+import { cronHandlers } from './cron.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, glob as fsGlob } from 'node:fs/promises';
@@ -119,6 +120,7 @@ export async function runSpawnSubagent(subagentName: string, task: string, conte
     logPrefix: tag,
     agentId: `subagent:${subagentName}:${randomUUID()}`,
     memory: false,
+    cron: context.cron,
   });
   if (!result.finished) {
     const error = `subagent「${subagentName}」未完成任务（已执行 ${result.rounds} 轮）`;
@@ -188,4 +190,5 @@ export const toolHandlers: Record<string, ToolHandler> = {
     return skill.body;
   },
   ...taskHandlers,
+  ...cronHandlers,
 };

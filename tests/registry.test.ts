@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 it('registers every schema with the matching handler, without duplicates', () => {
-  const names = ['bash', 'read_file', 'write_file', 'edit_file', 'glob', 'todo_write', 'spawn_subagent', 'load_skill', 'create_tasks', 'clamic_task', 'get_tasks_detail', 'complate_tasks'];
+  const names = ['bash', 'read_file', 'write_file', 'edit_file', 'glob', 'todo_write', 'spawn_subagent', 'load_skill', 'create_tasks', 'clamic_task', 'get_tasks_detail', 'complate_tasks', 'create_cron_job', 'cancel_cron_job', 'list_cron_job'];
   expect(toolSchemas.map(schema => schema.function.name)).toEqual(names);
   expect(Object.keys(toolHandlers)).toEqual(names);
   expect(new Set(names).size).toBe(toolSchemas.length);

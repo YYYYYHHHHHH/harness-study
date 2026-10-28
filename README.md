@@ -19,6 +19,8 @@ cp .env.example .env
 - `src/hooks/`：共用输入、工具前后及停止 hook；通过 `runId` 和 `logPrefix` 区分每次运行。
 - `src/skills/`：扫描 skill 文件、解析元信息和正文、生成可用 skills 提示词。
 - `src/index.ts`：CLI 多轮输入循环、会话历史、主 agent 配置和答复展示。
+- `src/cron/`：独立 Worker 中的定时检查、`.cron/` 持久化、任务队列及主线程消费者。
+- `src/agent-turns.ts`：用户输入和定时任务共用的主会话串行执行入口。
 
 主 agent 和 subagent 都调用同一个入口：
 
@@ -36,6 +38,58 @@ const result = await runAgent({
 返回值为 `{ finished, finalContent, rounds }`。可选传入 `messages` 数组以跨问题复用会话历史（包含 system、用户输入、模型回复和工具结果，并原地更新压缩后的历史）；不传时仍为独立运行，subagent 默认不共享主会话。不设最大循环次数，持续执行到模型不再调用工具；模型或 hook 异常向上传播；工具异常作为工具结果交回模型。有效配置下的运行会在 `finally` 中触发 Stop hook。
 
 `spawn_subagent` 是 `handlers.ts` 中的普通工具：复用调用方的客户端和模型，配置独立提示词、消息历史和日志前缀，并移除工具集合中的 `spawn_subagent`。子 agent 仍共享工作目录，完成后向主 agent 返回总结。
+
+## 定时调度
+
+CLI 启动时加载工作区 `.cron/jobs.json`，初始化 Worker 内的 `cron_jobs`。
+独立 Worker 每秒检查到期任务并放入 FIFO 消费队列；主线程消费者每秒检查一次，
+只有主 agent 空闲时才取出任务，将 `prompt` 原文作为新一轮 `runAgent` 的 `input`。
+定时任务复用主会话历史、agent ID、工具和 hooks；用户输入与定时任务共用串行入口，
+包括模型调用、工具执行和记忆整理在内，整轮不会重叠。子 agent 的定时工具也使用同一个调度器。
+
+| 工具 | 参数 | 返回 |
+| --- | --- | --- |
+| `create_cron_job` | `{prompt, drauble, recurring, cron}` | `{ok:true, job:{id,prompt,drauble,recurring,cron}}` |
+| `cancel_cron_job` | `{id}` | `{ok:true, cancelled:boolean}`，不存在时为 false |
+| `list_cron_job` | `{}` | `{ok:true, jobs:[...]}`，附带 `next_run_at` 和 `status` |
+
+`id` 自动生成 UUID；**`drauble` 沿用约定拼写**，true 才落盘，false 仅当前进程有效。
+**`recurring=true` 表示重复执行，false 表示一次性**，一次性任务在表达式的下一个匹配时间触发。
+`prompt` 是任务描述，也就是执行时注入的消息，不另外保存 `message` 字段。
+列表状态为 `scheduled`、`queued`、`running`；`next_run_at` 是本次待触发/待消费时间的 ISO 时间戳。
+
+例如每天本地时间 9 点执行并跨重启保留：
+
+```json
+{
+  "prompt": "检查项目测试结果并汇报失败项",
+  "drauble": true,
+  "recurring": true,
+  "cron": "0 9 * * *"
+}
+```
+
+Cron 支持五字段 `分 时 日 月 周`、六字段 `秒 分 时 日 月 周`，以及范围、列表、步长。
+例如 `*/30 * * * * *` 表示每 30 秒；`recurring:false` 时仅执行下一次匹配。
+时区使用应用进程的本地时区，可在启动前设置 `TZ=Asia/Shanghai`；改变时区后新计算的触发时间按新时区解释。
+
+每个任务最多有一个等待或执行中的实例。应用停机或 agent 忙碌期间错过的多次触发合并为一次，
+重复任务执行结束后计算下一个未来匹配时间，避免历史任务积压。取消会删除存储记录及尚未消费的任务；
+已经开始的模型调用不被中断，也不会在结束时重新加入被取消的任务。
+
+持久化采用同目录临时文件加原子 rename，保存调度时间和待执行状态；一次性任务完成后从存储移除。
+模型执行报错会显示错误并结束本次尝试，一次性任务仍会移除，重复任务继续下一次调度。
+进程异常中断时，尚未确认完成的持久化任务会在重启后重试，因此外部操作需要自行考虑幂等性。
+调度/存储错误会停止消费并报告错误，避免静默丢失任务。损坏存储会使启动失败，不会覆盖原文件。
+
+`.cron/` 已加入 Git 忽略。同一目录只能启动一个调度器，以 `.cron/.lock` 目录锁防止重复执行及覆盖。
+Ctrl+C、SIGTERM 或 EOF 会停止消费，等待已开始的轮次完成，再关闭 Worker 并释放锁。
+强制终止可能留下锁；确认没有其他应用实例后，才能手动移除 `.cron/.lock`。
+应用关闭期间不执行任务，重启后恢复持久化任务；这不是操作系统后台服务。
+
+程序化调用时可用 `CronScheduler.start(directory)` 启动服务，并通过 `runAgent({cron, ...})` 注入工具上下文；
+需要主动执行时，配合 `CronConsumer` 和 `AgentTurns`，所有共用历史的调用都应通过同一个 `AgentTurns`。
+退出时先 `await consumer.stop()`，再 `await cron.stop()`。不传 `cron` 时，定时工具会返回“调度器未启动”。
 
 ## 记忆
 

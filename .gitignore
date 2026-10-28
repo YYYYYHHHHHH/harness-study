@@ -9,6 +9,7 @@ coverage/
 .transcripts/
 .task/
 .memory/
+.cron/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

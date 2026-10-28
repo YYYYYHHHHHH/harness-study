@@ -115,6 +115,12 @@ describe('subagent orchestration (mocked agent, no LLM/network)', () => {
     // Preserve the user's removal of the hardcoded ten-round limit.
     expect(options).not.toHaveProperty('maxRounds');
   });
+  it('shares the scheduling service with a subagent', async () => {
+    vi.mocked(runAgent).mockResolvedValue({ finished: true, finalContent: 'done', rounds: 1 });
+    const cron = { create: vi.fn(), cancel: vi.fn(), list: vi.fn(), take: vi.fn(), finish: vi.fn() };
+    await runSpawnSubagent('worker', 'task', { ...context, cron });
+    expect(vi.mocked(runAgent).mock.calls[0][0].cron).toBe(cron);
+  });
   it('reports unfinished runs', async () => {
     vi.mocked(runAgent).mockResolvedValue({ finished: false, finalContent: null, rounds: 50 });
     expect(JSON.parse(await runSpawnSubagent('worker', 'task', context))).toEqual({
