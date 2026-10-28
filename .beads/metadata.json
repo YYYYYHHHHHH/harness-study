@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "harness_study",
+  "project_id": "8f132343-4481-47f9-94fd-50291399b804"
+}
