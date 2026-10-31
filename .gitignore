@@ -10,6 +10,7 @@ coverage/
 .task/
 .memory/
 .cron/
+# agent_team runtime data, including .pending-* files and .owner.lock/ inside the inbox
 .teammates_inbox/
 
 # Beads / Dolt files (added by bd init)

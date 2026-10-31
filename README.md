@@ -39,6 +39,115 @@ const result = await runAgent({
 
 `spawn_subagent` 是 `handlers.ts` 中的普通工具：复用调用方的客户端和模型，配置独立提示词、消息历史和日志前缀，并移除工具集合中的 `spawn_subagent`。子 agent 仍共享工作目录，完成后向主 agent 返回总结。
 
+## agent_team：常驻队友与消息
+
+CLI 的 `npm start` 默认启用团队运行时，启动时注册主 agent 的 `main` 路由；teammate 由主 agent
+通过工具创建。这里的 **logical independent threads** 指同一进程内可并发的独立异步会话，
+不是每个队友一个 OS 线程或子进程。所有角色共享启动工作区，文件修改彼此可见；每位 teammate
+独立保留消息历史、稳定 agentId、后台任务 Map 和串行执行入口，后续消息复用自己的会话。
+teammate 关闭记忆功能，不继承 main 的聊天历史；任务上下文应写入启动 prompt 或显式发送。
+
+### 工具参数与 main / A / B 寻址
+
+以下是模型工具调用示例，不是 CLI slash 命令或直接可导入的 JavaScript 函数。
+A、B 是说明用的角色标签；实际路由必须小写，因此用 `a`、`b`：
+
+```ts
+// main 创建 A、B；整个批次注册后才启动各自的 prompt。
+spawn_teammates({ teammates: [
+  { name: "a", prompt: "检查消息协议，将发现发给 b，并向 main 汇报。" },
+  { name: "b", prompt: "检查消息消费测试，收到 a 的发现后核对并向 main 汇报。" },
+] });
+
+// main → A（由 main 调用）
+send_message({ sender: "main", target: "a", content: "请重点检查名称与身份校验。" });
+// A → B（由 a 调用）
+send_message({ sender: "a", target: "b", content: "请确认失败消息保留的测试。" });
+// B → main（由 b 调用）
+send_message({ sender: "b", target: "main", content: "已核对测试，失败队首保留且停止自动消费。" });
+```
+
+`spawn_teammates` 必须传非空 `teammates` 数组，每项只含必填的 `name`、`prompt`。
+`send_message` 只接受必填的 `sender`、`target`、`content`。两者拒绝缺失、未知字段、类型错误，
+以及纯空白 prompt/content；正文原样保留，不做 trim。名称为 1–64 个 ASCII 小写字母、数字、
+下划线或连字符，首位必须是字母；不接受大写、空白、点号、路径分隔符及设备保留名
+`con`、`prn`、`aux`、`nul`、`com0`–`com9`、`lpt0`–`lpt9`，不做自动归一化。
+`main` 可用于消息寻址但不能创建为 teammate；同批重名或会话中已用过的名称均拒绝，
+即使启动失败或已 stopped 也不能复用名称。
+
+sender 必须等于运行时绑定的路由名，不能填写内部 agentId、日志前缀或冒充其他角色。
+目标必须已注册且仍接收消息；支持 main、其他 teammate 和自投递。忙碌目标也可接收，先入队等待。
+teammate 的普通最终答复不会自动转发给 main，汇报结果或阻塞必须显式调用 `send_message`。
+
+| 角色 | 可用工具 |
+| --- | --- |
+| main | 全部现有工具，加 `spawn_teammates`、`send_message` |
+| teammate | 仅 `bash`、`read_file`、`write_file`、`edit_file`、`glob`、`load_skill`、`todo_write`、`send_message` |
+| 旧 `spawn_subagent` 子 agent | 原有基础、task、cron 工具；无 `spawn_subagent`、`spawn_teammates`、`send_message`，无团队路由 |
+
+teammate 不能使用持久化任务工具、cron 工具或继续创建 agent；`todo_write` 只展示当前计划。
+角色限制同时用于工具 schema 和 dispatcher。它是工具 API 的能力边界，不是文件系统安全沙箱，
+共享工作区的 bash/文件操作仍需自行协调，避免同时覆盖同一个文件。
+
+创建工具返回 `{teammates: [{name, agentId, state, error?}, ...]}` 状态快照，不等待任务完成。
+参数校验失败时不启动任何成员；批次 inbox 初始化失败时整批不运行模型，返回逐成员错误，
+只撤销本批次安全的空注册，保留文件和已使用名称。启动后某位成员的模型失败会停止该成员，
+健康成员继续运行，不自动重建失败成员。
+
+投递成功返回 `{id, sender, target, content, created_at, status: "queued"}`；id 和 UTC 时间由总线生成。
+**queued 仅表示消息已持久化，不表示已执行或已回复。** 每条消息存于
+`.teammates_inbox/<路由名>.jsonl`（包括 `main.jsonl`），磁盘记录不含 status 字段。
+同一 inbox 按提交顺序 FIFO，跨发送者的并发投递按取得存储锁的顺序排序，不按时间戳排序。
+
+### 消息循环与退出
+
+一个 loop 指一次 `runAgent` 调用到最终答复的完整模型/工具循环。loop 正常结束后立即检查 inbox，
+逐条取队首、包装为含 `type: "team_message"` 和 `message` 的 user 输入，运行独立一轮，
+成功完成后才 ack 删除该队首；正文不进入 system prompt，也不在当前 loop 中途注入。
+teammate 继续逐条排空，期间新投递也会被读到。main 使用同样的处理边界，但每批最多 16 条，
+发现排队的直接输入时先让出入口；余下消息由后续轮次或空闲轮询继续处理，避免用户输入和 cron 饥饿。
+
+空闲时只有一个 **1000ms 单次轮询 timer**，不是 cron job；运行或排队时撤销 timer，
+回到空闲才恢复，轮询与输入竞争时也不会重入。同一个 agent 的轮次串行，不同 agent 可并发。
+main 的用户输入、cron 和 inbox 共用同一串行入口和历史。
+
+Ctrl+C / SIGINT、SIGTERM 或 EOF 会停止接纳新工作、取消团队与 cron 消费 timer，
+CLI 同时中止共享客户端的在途模型 HTTP 请求，再等待已开始的轮次和 I/O 收尾，关闭总线、
+cron Worker 并释放所有权锁。尚未开始的输入与消息不再执行；成功结束的在途消息可以 ack，
+未完成消息保留。已有工具操作仍需收尾，退出不保证瞬时完成。
+程序化调用 `TeamRuntime.stop()` 本身只停止接纳并等待，不主动取消模型请求；宿主负责取消策略。
+不通过 CLI 使用 `runAgent` 时需注入运行时绑定的 team client，否则团队工具报“团队运行时未启用”。
+
+### 故障、遗留数据与排查
+
+模型异常、`finished: false`、JSONL 损坏或 I/O/ack 失败会停止受影响 inbox 的自动消费，
+保留未确认消息，不跳过坏行，也不每秒无限重试；局部故障不停止健康队友，共享目录/所有权失效
+会拒绝整个总线的 I/O。teammate 启动 prompt 失败也会停止该会话。main 直接用户输入失败会沿
+CLI 错误路径退出；直接 cron 执行失败由 cron 报告并允许后续轮次，inbox 消费失败则停止该消费者。
+参数、身份和投递错误通过工具结果返回给模型；存储错误不会返回 queued。
+
+| 现象 | 检查与处理 |
+| --- | --- |
+| 名称、sender 或目标被拒绝 | 按上述限制检查小写路由、调用者绑定身份及目标状态；stopping/stopped 不接受新投递 |
+| 队友停止回复 | 查看 `[agent:<agentId>] message:<id 或 <direct/unknown>>` 错误日志；程序化宿主可查 `runtime.status()` 的 teammate 状态和 `error`（阶段、说明、时间、可用的 messageId），CLI 没有额外状态查询工具 |
+| `OWNERSHIP` / 已有所有者 | 同一工作区只能启动一个总线；确认所有旧实例已停止，再人工移除残留 `.teammates_inbox/.owner.lock` 目录，不按 PID/超时自动抢锁 |
+| `RECOVERY_REQUIRED` / 损坏 JSONL | 注册路由时发现非空旧 inbox 或坏记录会拒绝消费；先检查并归档原文件，不能靠反复启动清空或跳过消息。main 注册失败会使 CLI 启动失败；teammate 注册失败返回批次错误 |
+| 写入/ack 失败 | 结合 messageId 检查原文件；若 rename 后目录 fsync 失败，提交结果不确定，文件可能已改变，不能盲目重投或重跑 |
+
+退出保留 inbox，重启不自动恢复 agent 会话、历史或后台任务，也不自动消费遗留非空 inbox。
+空 inbox 可复用；未注册路由的旧文件仍留在磁盘。底层 `MessageBus.register(name, {recover: true})`
+仅供人工检查后的显式恢复，CLI 没有恢复开关，该选项也不恢复模型会话或容忍损坏记录。
+不承诺跨崩溃 **exactly-once**：模型成功但 ack 前崩溃，显式恢复后可能重复执行，外部副作用应考虑幂等。
+
+写入采用 inbox 同目录 `.pending-<UUID>` 临时文件、fsync 和原子 rename；所有权锁为
+`.teammates_inbox/.owner.lock/`。`.gitignore` 的 `.teammates_inbox/` 覆盖消息、临时文件和锁目录。
+异常退出可能留下临时文件和锁，不会在下次启动自动删除；只有确认没有活跃所有者后才人工清理。
+实现面向本地小规模团队，每次存储操作读取整个 inbox，变更时重写队列；不支持共享网络盘。
+
+参数与能力定义见 [protocol.ts](src/agent-team/protocol.ts) 和 [capabilities.ts](src/agent-team/capabilities.ts)；
+行为回归见 [团队工作流测试](tests/agent-team-workflow.test.ts)、[CLI 集成测试](tests/team-cli.test.ts)
+和 [消费器测试](tests/team-consumer.test.ts)。这些测试使用模拟响应或本地 HTTP stub，不调用真实模型 API。
+
 ## 每轮上下文快照
 
 每次 agent loop 完成模型调用和本轮全部工具执行后，自动把当前完整的 `messages` 数组保存为格式化 JSON：
