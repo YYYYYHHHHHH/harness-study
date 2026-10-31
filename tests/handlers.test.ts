@@ -142,6 +142,19 @@ describe('subagent orchestration (mocked agent, no LLM/network)', () => {
     await runSpawnSubagent('worker', 'task', { ...context, cron });
     expect(vi.mocked(runAgent).mock.calls[0][0].cron).toBe(cron);
   });
+  it('does not inherit team tools when the parent later registers them', async () => {
+    vi.mocked(runAgent).mockResolvedValue({ finished: true, finalContent: 'done', rounds: 1 });
+    const teamTools = ['spawn_teammates', 'send_message'].map(name => ({
+      schema: { type: 'function' as const, function: { name } }, handler: vi.fn(),
+    }));
+    await runSpawnSubagent('worker', 'task', { ...context, tools: [...tools, ...teamTools] });
+    const options = vi.mocked(runAgent).mock.calls[0][0];
+    expect(options.tools).toEqual(tools.filter(tool => tool.schema.function.name !== 'spawn_subagent'));
+    expect(options.systemPrompt).not.toContain('spawn_teammates');
+    expect(options.systemPrompt).not.toContain('send_message');
+    expect(options.memory).toBe(false);
+    expect(options.agentId).toMatch(/^subagent:worker:/);
+  });
   it('reports unfinished runs', async () => {
     vi.mocked(runAgent).mockResolvedValue({ finished: false, finalContent: null, rounds: 50 });
     expect(JSON.parse(await runSpawnSubagent('worker', 'task', context))).toEqual({

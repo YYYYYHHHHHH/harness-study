@@ -8,6 +8,7 @@ import { runAgent } from '../agent.js';
 import type { ToolContext, ToolHandler } from './dispatch.js';
 import { runBash } from './bash.js';
 import { startBackgroundBash } from '../background-tasks.js';
+import { toolsForTeamRole } from '../agent-team/capabilities.js';
 
 export { runBash } from './bash.js';
 
@@ -85,7 +86,7 @@ export async function runTodoWrite(todos: TodoItem[], logPrefix = ''): Promise<s
 export async function runSpawnSubagent(subagentName: string, task: string, context: ToolContext): Promise<string> {
   const tag = chalk.magenta(`[subagent:${subagentName}]`);
   console.log(`\n${tag} ${chalk.cyan('▶ 启动')} ${chalk.gray('任务:')} ${chalk.white(task)}`);
-  const tools = context.tools.filter(tool => tool.schema.function.name !== 'spawn_subagent');
+  const tools = toolsForTeamRole(context.tools, 'subagent');
   const systemPrompt = `你是一个名为「${subagentName}」的 subagent，由主 agent 派发任务给你。
 你的工作目录是 ${process.cwd()}。
 可用工具：${tools.map(tool => tool.schema.function.name).join('、')}。你无法再派发 subagent。
