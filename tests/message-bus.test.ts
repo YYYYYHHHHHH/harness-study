@@ -197,7 +197,8 @@ describe('path safety and corruption', () => {
     const bus = await open();
     await expect(bus.register('worker', { recover: true })).rejects.toMatchObject({ code: 'STORAGE', cause: { code: 'CORRUPT' } });
     expect(await fs.readFile(join(root, 'worker.jsonl'))).toEqual(before);
-    await expect(bus.register('main')).rejects.toBe(bus.error('worker'));
+    await expect(bus.register('main')).resolves.toBeUndefined();
+    await expect(bus.register('worker', { recover: true })).rejects.toBe(bus.error('worker'));
   });
 
   it('validates the entire queue before returning a valid head', async () => {
@@ -264,7 +265,7 @@ describe('I/O failures and ownership', () => {
     expect(await disk()).toBe(encodeInboxMessage(committed));
   });
 
-  it.each(['append', 'ack'])('atomic %s failure preserves old bytes and stops all operations', async operation => {
+  it.each(['append', 'ack'])('atomic %s failure preserves old bytes and stops only the affected route', async operation => {
     const bus = await ready();
     const first = await send(bus);
     if (operation === 'ack') await bus.peek('worker');
@@ -276,7 +277,8 @@ describe('I/O failures and ownership', () => {
     expect(await disk()).toBe(before);
     expect((await fs.readdir(root)).filter(name => name.startsWith('.pending-'))).toEqual([]);
     await expect(bus.peek('worker')).rejects.toBe(bus.error('worker'));
-    await expect(bus.register('other')).rejects.toBe(bus.error('worker'));
+    await expect(bus.register('other')).resolves.toBeUndefined();
+    await expect(bus.append({ sender: 'main', target: 'other', content: 'healthy' })).resolves.toMatchObject({ content: 'healthy' });
   });
 
   it('reports missing files and refused registration writes', async () => {
@@ -344,13 +346,13 @@ describe('initialization registration rollback', () => {
     await expect(bus.unregisterEmpty('worker')).rejects.toMatchObject({ code: 'CLOSED' });
   });
 
-  it('can release an empty route after unrelated corrupt storage stops normal admission', async () => {
+  it('can release an empty route after an unrelated inbox becomes corrupt', async () => {
     const bus = await ready();
     await fs.writeFile(join(root, 'bad.jsonl'), 'broken\n');
     await expect(bus.register('bad')).rejects.toMatchObject({ code: 'STORAGE' });
     expect(await bus.unregisterEmpty('worker')).toBe(true);
     expect(await disk()).toBe('');
-    await expect(bus.register('worker')).rejects.toMatchObject({ code: 'STORAGE' });
+    await expect(bus.register('worker')).resolves.toBeUndefined();
     expect(await fs.readFile(join(root, 'bad.jsonl'), 'utf8')).toBe('broken\n');
   });
 });

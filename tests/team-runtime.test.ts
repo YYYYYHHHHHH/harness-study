@@ -57,8 +57,8 @@ it('registers the whole batch before concurrent execution and returns while both
     expect(result.teammates.map((s: { state: string }) => s.state)).toEqual(['running', 'running']);
     expect(runner).toHaveBeenCalledTimes(2);
     await Promise.all(sent);
-    expect((await bus.peek('writer'))?.sender).toBe('tester');
-    expect((await bus.peek('tester'))?.sender).toBe('writer');
+    expect(JSON.parse(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).sender).toBe('tester');
+    expect(JSON.parse(await fs.readFile(inboxPath(workspace, 'tester'), 'utf8')).sender).toBe('writer');
   } finally { finish.resolve(done); }
 });
 
@@ -265,4 +265,69 @@ it('opens and releases its own bus, including failed main registration', async (
   const reopened = await MessageBus.open(workspace);
   await reopened.close();
   expect(await fs.readFile(inboxPath(workspace, 'main'), 'utf8')).toBe(encodeInboxMessage(legacy));
+});
+
+it('automatically drains durable messages after initial and direct turns with the same session', async () => {
+  const finish = deferred<AgentResult>();
+  runner.mockReturnValueOnce(finish.promise);
+  await runtime.spawnTeammates({ teammates: [specs.teammates[0]] });
+  const { status: _status_message, ...message } = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'follow up' });
+  finish.resolve(done);
+  await vi.waitFor(() => expect(runtime.status()[0].state).toBe('idle'));
+  expect(runner.mock.calls[1][0].input).toBe(teamMessageToUserEvent(message).content);
+  expect(runner.mock.calls[1][0].messages).toBe(runner.mock.calls[0][0].messages);
+  expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe('');
+  const { status: _status_next, ...next } = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'after direct' });
+  await runtime.runTurn('writer', 'direct');
+  expect(runner.mock.calls.slice(2).map(([options]) => options.input)).toEqual(['direct', teamMessageToUserEvent(next).content]);
+  expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe('');
+});
+
+it('preserves a failed inbox head and unread messages on disk while peers continue', async () => {
+  const finish = deferred<AgentResult>();
+  runner.mockReturnValueOnce(finish.promise);
+  await runtime.spawnTeammates(specs);
+  const { status: _status_first, ...first } = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'bad' });
+  await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'unread' });
+  const before = await fs.readFile(inboxPath(workspace, 'writer'), 'utf8');
+  runner.mockImplementation(async options => {
+    if (options.input === teamMessageToUserEvent(first).content) throw new Error('inbox model failure');
+    return done;
+  });
+  finish.resolve(done);
+  await vi.waitFor(() => expect(runtime.status()[0]).toMatchObject({ state: 'stopped', error: { phase: 'model', messageId: first.id } }));
+  expect(bus.error('writer')).toMatchObject({ code: 'CONSUMER_FAILED', messageId: first.id });
+  expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe(before);
+  await expect(runtime.runTurn('tester', 'still healthy')).resolves.toBe(done);
+  expect(runtime.status()[1].state).toBe('idle');
+});
+
+it('isolates a corrupt inbox storage failure from healthy teammates', async () => {
+  const finish = deferred<AgentResult>();
+  runner.mockReturnValueOnce(finish.promise);
+  await runtime.spawnTeammates(specs);
+  await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'preserve' });
+  await fs.appendFile(inboxPath(workspace, 'writer'), '{');
+  const before = await fs.readFile(inboxPath(workspace, 'writer'), 'utf8');
+  finish.resolve(done);
+  await vi.waitFor(() => expect(runtime.status()[0]).toMatchObject({ state: 'stopped', error: { phase: 'storage' } }));
+  expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe(before);
+  const { status: _status_message, ...message } = await context.team!.sendMessage({ sender: 'main', target: 'tester', content: 'healthy route' });
+  await runtime.runTurn('tester', 'still healthy');
+  expect(runner.mock.calls.at(-1)![0].input).toBe(teamMessageToUserEvent(message).content);
+  expect(await fs.readFile(inboxPath(workspace, 'tester'), 'utf8')).toBe('');
+  expect(bus.error('tester')).toBeUndefined();
+});
+
+
+it('stops only the target when durable append fails and records its message id', async () => {
+  await runtime.spawnTeammates(specs);
+  await vi.waitFor(() => expect(runtime.status().every(s => s.state === 'idle')).toBe(true));
+  vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('target write failed'));
+  await expect(context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'failed append' })).rejects.toThrow('target write failed');
+  expect(runtime.status()[0]).toMatchObject({ state: 'stopped', error: { phase: 'storage', messageId: expect.any(String) } });
+  const { status: _status_message, ...message } = await context.team!.sendMessage({ sender: 'main', target: 'tester', content: 'healthy' });
+  await runtime.runTurn('tester', 'direct');
+  expect(runner.mock.calls.at(-1)![0].input).toBe(teamMessageToUserEvent(message).content);
+  expect(runtime.status()[1].state).toBe('idle');
 });

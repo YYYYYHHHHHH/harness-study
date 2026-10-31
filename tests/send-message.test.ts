@@ -54,7 +54,6 @@ it.each([['main', 'writer'], ['writer', 'tester'], ['tester', 'main'], ['writer'
     expect(text.split('\n')).toHaveLength(2);
     const { status, ...message } = receipt;
     expect(JSON.parse(text)).toEqual(message);
-    expect(await bus.peek(target)).toEqual(message);
     expect(runner).toHaveBeenCalledTimes(2); // initial prompts only, even for an idle target
     if (target === 'main') expect(inboxPath(workspace, target)).toBe(join(workspace, '.teammates_inbox/main.jsonl'));
   },
@@ -81,6 +80,7 @@ it('queues for a busy target while both agents exchange messages without nested 
   let finish!: (result: AgentResult) => void;
   const pending = new Promise<AgentResult>(resolve => { finish = resolve; });
   runner.mockImplementation(async options => {
+    if (options.input !== 'follow up') return done;
     await send('writer', 'tester', 'peer request', { ...teammateContext('writer'), team: options.team });
     await send('writer', 'main', 'explicit result', { ...teammateContext('writer'), team: options.team });
     return pending;
@@ -98,7 +98,10 @@ it('queues for a busy target while both agents exchange messages without nested 
   await turn;
   expect((await disk('main')).trimEnd().split('\n').map(line => JSON.parse(line).content)).toEqual(['explicit result']);
   expect(JSON.parse(await disk('tester')).content).toBe('peer request');
-  expect(runner).toHaveBeenCalledTimes(3);
+  expect(runner).toHaveBeenCalledTimes(5); // direct input, then two FIFO inbox turns
+  expect(await disk('writer')).toBe('');
+  expect(runner.mock.calls.slice(3).map(([options]) => JSON.parse(options.input).message.content))
+    .toEqual(['from main', 'peer reply']);
   expect(runner.mock.calls[2][0].systemPrompt).toContain('"target":"main"');
   expect(runner.mock.calls[2][0].systemPrompt).toContain('普通最终答复不会自动发送');
 });
@@ -143,7 +146,8 @@ it('returns an explicit storage error with no queued receipt and preserves the i
   vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('EIO: injected rename failure'));
   await expect(send('main', 'writer')).rejects.toThrow('EIO: injected rename failure');
   expect(await disk('writer')).toBe(before);
-  expect(runtime.status().every(s => s.state === 'stopped' && s.error?.phase === 'storage')).toBe(true);
-  await expect(send('tester', 'main', content, teammateContext('tester'))).rejects.toThrow('运行时已停止');
+  expect(runtime.status()[0]).toMatchObject({ state: 'stopped', error: { phase: 'storage' } });
+  expect(runtime.status()[1].state).toBe('idle');
+  expect(JSON.parse(await send('tester', 'main', content, teammateContext('tester'))).status).toBe('queued');
   expect(runner).toHaveBeenCalledTimes(2);
 });
