@@ -75,3 +75,19 @@ stop 是幂等的：停止接纳新工作，等待当前 loop 收尾，成功的
 本期测试覆盖 schema 和 parser 的对象根约束、空数组、重名/已占用名/保留名/非法名、空 prompt/content、缺失/未知字段、运行时 sender 伪造、非法/未知目标、JSONL 单行往返、user 事件隔离、角色过滤及旧 subagent 回归。测试通过真实 dispatchTool 调用 parser；不调用真实模型。
 
 后续 runtime 接入必须在上述 API 下测试：并发 append/ack 不丢数据、同 agent 不重入、跨 agent 并行、running 无 timer、loop 后 drain、idle 1000ms 唤醒、失败只执行一次并保留 head、坏行/遗留文件处理、stop 与在途任务竞态、稳定会话对象及 memory:false。这些运行时行为在本期是契约，尚未声称实现。
+
+## JSONL 总线实现（ILU-7）
+
+`MessageBus.open(workspace)`（`src/agent-team/message-bus.ts`）取得工作区独占所有权；`register(name)` 创建或复用空 inbox，绝不截断旧文件。`main` 与 teammate 使用同一接口。非空旧文件返回 `RECOVERY_REQUIRED`（带队头 id），只有人工检查后显式 `register(name, { recover: true })` 才能恢复；损坏文件即使指定恢复也拒绝。恢复不会认证历史 sender，也不会恢复模型会话。
+
+可信 runtime 通过 `append({ sender, target, content })` 投递；必须先按绑定身份调用协议 parser，不能把总线的结构校验当作身份认证。调用方只能经总线读写 inbox，不能在 handler 中直接改文件。总线验证 sender/target 已注册且未失败，分配 UUID 和 UTC 时间，成功返回时记录已持久化。
+
+消费顺序为 `peek(target)` → 运行一条消息 → `acknowledge(target, message.id)`。`peek` 在内存预留队头并保留磁盘记录；第二次 peek 返回 `RESERVED`，不会向另一个消费者重复交付。运行期间仍可 append，ack 在同一 I/O 互斥锁中重读最新文件，只删除匹配的队头。全部路由共享短时 I/O 互斥锁，模型运行不占此锁。此实现对每次操作读取整个 inbox，并对变更重写整个队列，适用于本地小规模团队；未做大队列性能优化。
+
+运行异常或 `finished: false` 时调用 `fail(target, id, cause)`：保留磁盘消息及预留，拒绝该路由的后续投递、peek 和 ack。`error(target)` 返回含原因和 messageId 的错误，关闭后仍可查询。调用方生命周期必须同步保存/记录错误并停止该 agent。存储/完整性错误会拒绝当前操作并停止整个总线的后续操作；总线没有 timer、自动重试、隐式解除预留或死信跳过机制。`close()` 停止接纳，等待已接纳 I/O 后释放锁，幂等且不清空文件；runtime 应先等待活跃模型任务及其 ack/fail，再 close。
+
+文件为严格 UTF-8 JSONL：空文件有效，一个末尾 LF 可选，完整但没有末尾 LF 的旧记录可读取，下次成功提交时规范化为 LF。空白行、额外空行、CRLF、非法 UTF-8、截断 JSON、错误字段、重复 id、target 与文件名不符均报告路径/行号或编码错误，不跳过任何行；验证整个队列后才交付队头。错误原因为 `InboxError.cause`，外层存储错误还包含原因文本及可用的 messageId。名称限制复用 ILU-6；root 拒绝符号链接/非目录，inbox 拒绝符号链接、硬链接和非普通文件，每次操作重验目录与锁的身份，文件打开使用 NOFOLLOW 并复核 inode。
+
+所有修改均在同目录独占创建临时文件，写入、fsync、原子 rename 后 fsync 目录。提交前故障保留原文件；rename 后目录 fsync 失败属于**提交结果不确定**，文件可能已改变，错误仍会停止整个总线，必须人工按 messageId 检查，不能盲目重投/重跑。进程意外退出可能留下 `.pending-*`，这些不是消息记录，只有排除活跃所有者后才可人工清理。跨崩溃不承诺 exactly-once，模型成功但 ack 前崩溃仍可能在显式恢复后重复执行。
+
+`.teammates_inbox/.owner.lock` 使用原子 mkdir 独占；同进程的另一总线和其他 CLI 都立即报 `OWNERSHIP`，不会等待或抢占。正常 close 释放锁，异常退出的残留锁必须确认所有 CLI 已停止后手工移除，然后检查/归档 inbox 并选择显式恢复；不按 PID/超时自动删除锁。仅支持具备本地原子 mkdir/rename、NOFOLLOW 和目录 fsync 语义的文件系统；未支持共享网络盘。工作区仍是可信文件系统边界，不承诺防御拥有同等文件权限的恶意进程在检查与操作间反复替换目录。所有运行文件均被 `.gitignore` 排除，已有文件不会被清空。
