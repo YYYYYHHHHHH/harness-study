@@ -23,6 +23,11 @@ export interface TeamMessage extends SendMessageArgs {
   created_at: string;
 }
 
+/** Tool receipt only; status is not part of the persisted message format. */
+export interface SendMessageReceipt extends TeamMessage {
+  status: 'queued';
+}
+
 /** Runtime-owned inputs. Never construct this identity from tool arguments. */
 export interface MessageValidationContext {
   agentName: string;

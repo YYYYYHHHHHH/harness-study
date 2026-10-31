@@ -271,13 +271,13 @@ it('automatically drains durable messages after initial and direct turns with th
   const finish = deferred<AgentResult>();
   runner.mockReturnValueOnce(finish.promise);
   await runtime.spawnTeammates({ teammates: [specs.teammates[0]] });
-  const message = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'follow up' });
+  const { status: _status_message, ...message } = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'follow up' });
   finish.resolve(done);
   await vi.waitFor(() => expect(runtime.status()[0].state).toBe('idle'));
   expect(runner.mock.calls[1][0].input).toBe(teamMessageToUserEvent(message).content);
   expect(runner.mock.calls[1][0].messages).toBe(runner.mock.calls[0][0].messages);
   expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe('');
-  const next = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'after direct' });
+  const { status: _status_next, ...next } = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'after direct' });
   await runtime.runTurn('writer', 'direct');
   expect(runner.mock.calls.slice(2).map(([options]) => options.input)).toEqual(['direct', teamMessageToUserEvent(next).content]);
   expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe('');
@@ -287,7 +287,7 @@ it('preserves a failed inbox head and unread messages on disk while peers contin
   const finish = deferred<AgentResult>();
   runner.mockReturnValueOnce(finish.promise);
   await runtime.spawnTeammates(specs);
-  const first = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'bad' });
+  const { status: _status_first, ...first } = await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'bad' });
   await context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'unread' });
   const before = await fs.readFile(inboxPath(workspace, 'writer'), 'utf8');
   runner.mockImplementation(async options => {
@@ -312,7 +312,7 @@ it('isolates a corrupt inbox storage failure from healthy teammates', async () =
   finish.resolve(done);
   await vi.waitFor(() => expect(runtime.status()[0]).toMatchObject({ state: 'stopped', error: { phase: 'storage' } }));
   expect(await fs.readFile(inboxPath(workspace, 'writer'), 'utf8')).toBe(before);
-  const message = await context.team!.sendMessage({ sender: 'main', target: 'tester', content: 'healthy route' });
+  const { status: _status_message, ...message } = await context.team!.sendMessage({ sender: 'main', target: 'tester', content: 'healthy route' });
   await runtime.runTurn('tester', 'still healthy');
   expect(runner.mock.calls.at(-1)![0].input).toBe(teamMessageToUserEvent(message).content);
   expect(await fs.readFile(inboxPath(workspace, 'tester'), 'utf8')).toBe('');
@@ -326,7 +326,7 @@ it('stops only the target when durable append fails and records its message id',
   vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('target write failed'));
   await expect(context.team!.sendMessage({ sender: 'main', target: 'writer', content: 'failed append' })).rejects.toThrow('target write failed');
   expect(runtime.status()[0]).toMatchObject({ state: 'stopped', error: { phase: 'storage', messageId: expect.any(String) } });
-  const message = await context.team!.sendMessage({ sender: 'main', target: 'tester', content: 'healthy' });
+  const { status: _status_message, ...message } = await context.team!.sendMessage({ sender: 'main', target: 'tester', content: 'healthy' });
   await runtime.runTurn('tester', 'direct');
   expect(runner.mock.calls.at(-1)![0].input).toBe(teamMessageToUserEvent(message).content);
   expect(runtime.status()[1].state).toBe('idle');
