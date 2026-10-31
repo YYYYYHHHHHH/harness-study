@@ -15,7 +15,7 @@ send_message({ sender: "main", target: "reviewer", content: "请检查协议" })
 
 `AgentTeamClient` 由可信运行时按 agent 绑定身份和角色，不能由工具参数构造。`sendMessage` 再次调用 `parseSendMessageArgs`，以绑定的 name 检查 sender，使用已注册且接受消息的目标集合；不能仅把请求 sender 复制到文件。目标可以是 main、teammate 或自己；未知、stopping、stopped 的目标拒绝。旧 subagent 没有团队路由或团队 client。发件人校验不以模型声明、prompt 或展示名为依据。
 
-`spawnTeammates` 在 registry 锁内重验并一次预留全部名字，避免并发批次的重名竞态。校验失败没有副作用；启动失败需返回各成员可观测状态/error，成功成员保留，失败成员停止，不自动重建或重试，不承诺运行时启动的事务回滚。返回 `{teammates: TeamAgentStatus[]}`，不等待任务完成。`sendMessage` 成功返回完整 TeamMessage，含总线生成的 id/created_at；它仅确认可靠入队，不确认已执行或已回复。前置校验错误通过现有 dispatcher/agent 工具错误路径返回；存储失败还必须报告给生命周期所有者并停止相应自动消费，不能只让模型看到错误后无限重试。
+`spawnTeammates` 在 registry 锁内重验并一次预留全部名字，避免并发批次的重名竞态。校验失败没有副作用；启动失败需返回各成员可观测状态/error，成功成员保留，失败成员停止，不自动重建或重试，不承诺运行时启动的事务回滚。返回 `{teammates: TeamAgentStatus[]}`，不等待任务完成。`sendMessage` 成功返回 SendMessageReceipt，包含完整 TeamMessage（总线生成的 id/created_at）和 `status: "queued"`；它仅确认可靠入队，不确认已执行或已回复。前置校验错误通过现有 dispatcher/agent 工具错误路径返回；存储失败还必须报告给生命周期所有者并停止相应自动消费，不能只让模型看到错误后无限重试。
 
 ## 能力边界
 
@@ -105,3 +105,16 @@ stop 是幂等的：停止接纳新工作，等待当前 loop 收尾，成功的
 `runtime.runTurn(name, input)` 为后续消费者保留执行入口：它复用该 teammate 的 messages、agentId、bg_task_map、AgentTurns，始终 memory:false，不传入 cron。消费者须先用 teamMessageToUserEvent 包装消息，并在成功后 ack；此入口本身不读取、ack 或轮询 inbox。失败轮次记录错误并停止该会话，不自动重试。`runtime.stop()` 幂等停止接纳，等待已接纳的初始化、I/O 与模型轮次，跳过未开始的排队轮次，再关闭总线；不清空任何 inbox。
 
 ILU-8 测试使用 mock runAgent/模型响应及临时目录，覆盖并发启动、即时返回、同批寻址、跨轮次状态隔离、重名竞态、初始化回滚与消息保留、停止竞态、模型/存储失败和 schema/dispatch 双层角色约束。
+
+
+## 消息投递与 main 路由（ILU-9）
+
+生产注册表中的 `send_message({ sender, target, content })` 通过当前上下文的绑定 client 校验身份。公开路由名与内部 agentId、role、logPrefix 无关；sender 必须与绑定名称严格一致。未知字段、缺失字段、空白正文、非法名称和未注册目标均拒绝。注册表锁内再次检查生命周期，stopping/stopped 的发送方或目标明确报错，不能通过缓存的 client 继续发消息。
+
+工具回执是 `{ id, sender, target, content, created_at, status: "queued" }`。`queued` 只在统一 MessageBus 完成持久化后返回，不代表目标处理或回复。磁盘记录仍严格保持五个 TeamMessage 字段，绝不将回执 status 写入 JSONL。I/O 错误通过工具错误路径返回，运行时记录 storage 错误并停止团队接纳，不返回成功回执。
+
+main 在创建 TeamRuntime 时注册，路径固定为 `.teammates_inbox/main.jsonl`。main→teammate、teammate→teammate、teammate→main 和自投递使用同一总线；空闲与繁忙目标均先落盘。handler/client 不调用 runAgent，不等待目标响应，不触发递归或嵌套 agent loop。
+
+teammate 系统提示给出向 main 汇报结果/阻塞的具体 send_message 调用，并明确普通 finalContent 不会自动发送。运行时保留显式发送的单条结果，不将每次 finalContent 再复制到 main inbox。
+
+消费边界沿用 `teamMessageToUserEvent`：JSON 包装保留 id/sender/target/created_at 和原始正文，以一次 user 输入交给 runAgent；正文含换行、JSON 或 system 提示词片段也不会改写 system 消息。测试通过 mock 模型验证 main 和 teammate 均保留此边界。自动 pump、idle timer 及 CLI 生命周期接线仍按前述契约由后续模块提供；本任务未在发送路径增加消费器。

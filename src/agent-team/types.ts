@@ -1,7 +1,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { AgentTurns } from '../agent-turns.js';
 import type { BackgroundTaskMap } from '../background-tasks.js';
-import type { SpawnTeammatesArgs, SendMessageArgs, TeamMessage } from './protocol.js';
+import type { SpawnTeammatesArgs, SendMessageArgs, SendMessageReceipt, TeamMessage } from './protocol.js';
 
 export type TeamAgentRole = 'main' | 'teammate' | 'subagent';
 export type TeamAgentState = 'idle' | 'running' | 'stopping' | 'stopped';
@@ -37,7 +37,7 @@ export interface AgentTeamClient {
   /** Main only. Resolve after batch reservation/startup, not after teammates finish. */
   spawnTeammates(args: SpawnTeammatesArgs): Promise<{ teammates: TeamAgentStatus[] }>;
   /** Resolve after durable append, not after consumption or a response. */
-  sendMessage(args: SendMessageArgs): Promise<TeamMessage>;
+  sendMessage(args: SendMessageArgs): Promise<SendMessageReceipt>;
 }
 
 /** A single owner per workspace; implementations serialize append/peek/ack per inbox. */
