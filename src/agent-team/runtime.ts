@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { runAgent, type AgentOptions, type AgentResult } from '../agent.js';
 import { AgentTurns } from '../agent-turns.js';
+import { TeamConsumer } from './consumer.js';
 import { toolsForTeamRole } from './capabilities.js';
 import { MessageBus } from './message-bus.js';
 import { MAIN_AGENT_NAME, parseSendMessageArgs, parseSpawnTeammatesArgs, type SpawnTeammatesArgs } from './protocol.js';
 import type { AgentTeamClient, AgentTeamLifecycle, TeamAgentStatus, TeammateSession } from './types.js';
 
-export type RuntimeMessageBus = Pick<MessageBus, 'register' | 'unregisterEmpty' | 'append' | 'error' | 'close'>;
+export type RuntimeMessageBus = Pick<MessageBus, 'register' | 'unregisterEmpty' | 'append' | 'error' | 'close' | 'peek' | 'acknowledge' | 'fail'>;
 
 export interface TeamRuntimeOptions {
   workspace: string;
@@ -24,13 +25,13 @@ const detail = (error: unknown) => error instanceof Error ? error.message : Stri
 const snapshot = ({ name, agentId, state, error }: TeamAgentStatus): TeamAgentStatus =>
   ({ name, agentId, state, ...(error ? { error: { ...error } } : {}) });
 
-/** Owns registration and persistent sessions. Inbox polling is a separate consumer. */
+/** Owns registration, persistent sessions and one serial consumer per teammate. */
 export class TeamRuntime implements AgentTeamLifecycle {
   private readonly sessions = new Map<string, TeammateSession>();
   // Retain used names even when an initialization rollback removes its empty session.
   private readonly names = new Set<string>([MAIN_AGENT_NAME]);
   private readonly ready = new Set<string>([MAIN_AGENT_NAME]);
-  private readonly active = new Set<Promise<unknown>>();
+  private readonly consumers = new Map<string, TeamConsumer>();
   private registryTail: Promise<unknown> = Promise.resolve();
   private closing = false;
   private stopPromise?: Promise<void>;
@@ -81,7 +82,7 @@ export class TeamRuntime implements AgentTeamLifecycle {
           const parsed = parseSendMessageArgs(input, { agentName: name, knownAgents: this.acceptingNames() });
           try { return await this.bus.append(parsed); }
           catch (error) {
-            if (this.bus.error(name)) this.storageFailed(error);
+            if (this.bus.error(parsed.target) || this.bus.error(name)) this.storageFailed();
             throw error;
           }
         });
@@ -124,11 +125,19 @@ export class TeamRuntime implements AgentTeamLifecycle {
         for (const session of batch) {
           if (!registered.includes(session)) this.sessions.delete(session.name);
         }
-        if (this.bus.error(MAIN_AGENT_NAME)) this.storageFailed(error);
+        if (this.bus.error(MAIN_AGENT_NAME)) this.storageFailed();
         return { teammates: batch.map(snapshot) };
       }
       // Publish all routes before scheduling even the first initial prompt.
-      for (const session of batch) this.ready.add(session.name);
+      for (const session of batch) {
+        this.ready.add(session.name);
+        this.consumers.set(session.name, new TeamConsumer({
+          name: session.name, agentId: session.agentId, turns: session.turns, bus: this.bus,
+          execute: input => this.execute(session, input),
+          onState: state => { session.state = state; },
+          onError: error => { session.error = error; },
+        }));
+      }
       for (const session of batch) {
         // runTurn records failures and owns each promise, so detached initial runs cannot leak rejections.
         void this.runTurn(session.name, session.prompt).catch(() => {});
@@ -137,55 +146,40 @@ export class TeamRuntime implements AgentTeamLifecycle {
     });
   }
 
-  /** Subsequent user/message input uses the same history, identity, background map and gate.
-   * A future inbox consumer must wrap metadata with teamMessageToUserEvent and ack only on success.
-   */
+  /** Initial, direct and inbox input all enter the session's consumer gate. */
   runTurn(name: string, input: string): Promise<AgentResult> {
     this.assertOpen();
-    const session = this.sessions.get(name);
-    if (!session || !this.ready.has(name) || session.state === 'stopped' || session.state === 'stopping') {
-      throw new Error(`agent 不接收新轮次：${name}`);
-    }
-    session.state = 'running';
-    const result = session.turns.run(async () => {
-      this.assertOpen();
-      if (session.error || session.state === 'stopping' || session.state === 'stopped') {
-        throw new Error(`agent 不接收新轮次：${name}`);
-      }
-      session.state = 'running';
-      try {
-        const result = await (this.options.runAgent ?? runAgent)({
-          client: this.options.client, model: this.options.model, skills: this.options.skills,
-          tools: toolsForTeamRole(this.options.tools, 'teammate'), role: 'teammate', team: this.clientFor(name),
-          input, systemPrompt: `${this.options.systemPrompt ?? ''}\n你是 teammate「${name}」。你的消息 sender 是 ${name}，主 agent 是 main。专注获派任务，使用 send_message 与团队沟通。`,
-          messages: session.messages, agentId: session.agentId, bg_task_map: session.bg_task_map,
-          memory: false, logPrefix: `[teammate:${name}]`,
-        });
-        if (!result.finished) throw new Error(`teammate ${name} 未完成任务（${result.rounds} 轮）`);
-        return result;
-      } catch (error) {
-        this.failed(session, 'model', error);
-        throw error;
-      } finally {
-        session.state = this.closing || session.error ? 'stopped' : 'idle';
-      }
+    const consumer = this.consumers.get(name);
+    if (!consumer) throw new Error(`agent 不接收新轮次：${name}`);
+    return consumer.run(input);
+  }
+
+  private execute(session: TeammateSession, input: string): Promise<AgentResult> {
+    const name = session.name;
+    return (this.options.runAgent ?? runAgent)({
+      client: this.options.client, model: this.options.model, skills: this.options.skills,
+      tools: toolsForTeamRole(this.options.tools, 'teammate'), role: 'teammate', team: this.clientFor(name),
+      input, systemPrompt: `${this.options.systemPrompt ?? ''}\n你是 teammate「${name}」。你的消息 sender 是 ${name}，主 agent 是 main。专注获派任务，使用 send_message 与团队沟通。`,
+      messages: session.messages, agentId: session.agentId, bg_task_map: session.bg_task_map,
+      memory: false, logPrefix: `[teammate:${name}]`,
     });
-    this.active.add(result);
-    void result.then(() => this.active.delete(result), () => this.active.delete(result));
-    return result;
   }
 
   private failed(session: TeammateSession, phase: NonNullable<TeamAgentStatus['error']>['phase'], error: unknown): void {
-    session.error = { phase, message: detail(error), created_at: new Date().toISOString() };
+    const messageId = (error as { messageId?: string } | null)?.messageId;
+    session.error = { phase, message: detail(error), created_at: new Date().toISOString(), ...(messageId ? { messageId } : {}) };
     session.state = session.turns.busy ? 'stopping' : 'stopped';
-    console.error(`[teammate:${session.name}] ${phase}: ${detail(error)}`);
+    console.error(`[agent:${session.agentId}] message:${messageId ?? '<direct/unknown>'} ${phase}: ${detail(error)}`);
   }
 
-  private storageFailed(error: unknown): void {
-    this.closing = true;
+  private storageFailed(): void {
+    if (this.bus.error(MAIN_AGENT_NAME)) this.closing = true;
     for (const session of this.sessions.values()) {
+      const failure = this.bus.error(session.name);
+      if (!failure) continue;
+      void this.consumers.get(session.name)?.stop();
       // Keep the more specific cleanup failure when propagating a shared fault.
-      if (session.error?.phase !== 'storage') this.failed(session, 'storage', error);
+      if (!session.error) this.failed(session, 'storage', failure);
     }
   }
 
@@ -197,12 +191,13 @@ export class TeamRuntime implements AgentTeamLifecycle {
   stop(): Promise<void> {
     if (!this.stopPromise) {
       this.closing = true;
+      for (const consumer of this.consumers.values()) void consumer.stop();
       for (const session of this.sessions.values()) {
         if (session.state !== 'stopped') session.state = 'stopping';
       }
       this.stopPromise = (async () => {
         await this.registryTail;
-        await Promise.allSettled([...this.active]);
+        await Promise.all([...this.consumers.values()].map(consumer => consumer.stop()));
         for (const session of this.sessions.values()) session.state = 'stopped';
         await this.bus.close();
       })();

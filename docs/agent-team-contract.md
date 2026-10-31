@@ -84,11 +84,11 @@ stop 是幂等的：停止接纳新工作，等待当前 loop 收尾，成功的
 
 消费顺序为 `peek(target)` → 运行一条消息 → `acknowledge(target, message.id)`。`peek` 在内存预留队头并保留磁盘记录；第二次 peek 返回 `RESERVED`，不会向另一个消费者重复交付。运行期间仍可 append，ack 在同一 I/O 互斥锁中重读最新文件，只删除匹配的队头。全部路由共享短时 I/O 互斥锁，模型运行不占此锁。此实现对每次操作读取整个 inbox，并对变更重写整个队列，适用于本地小规模团队；未做大队列性能优化。
 
-运行异常或 `finished: false` 时调用 `fail(target, id, cause)`：保留磁盘消息及预留，拒绝该路由的后续投递、peek 和 ack。`error(target)` 返回含原因和 messageId 的错误，关闭后仍可查询。调用方生命周期必须同步保存/记录错误并停止该 agent。存储/完整性错误会拒绝当前操作并停止整个总线的后续操作；总线没有 timer、自动重试、隐式解除预留或死信跳过机制。`close()` 停止接纳，等待已接纳 I/O 后释放锁，幂等且不清空文件；runtime 应先等待活跃模型任务及其 ack/fail，再 close。
+运行异常或 `finished: false` 时调用 `fail(target, id, cause)`：保留磁盘消息及预留，拒绝该路由的后续投递、peek 和 ack。`error(target)` 返回含原因和 messageId 的错误，关闭后仍可查询。调用方生命周期必须同步保存/记录错误并停止该 agent。存储/完整性错误会拒绝当前操作并停止受影响路由；共享目录或所有权锁失效时停止整个总线；总线没有 timer、自动重试、隐式解除预留或死信跳过机制。`close()` 停止接纳，等待已接纳 I/O 后释放锁，幂等且不清空文件；runtime 应先等待活跃模型任务及其 ack/fail，再 close。
 
 文件为严格 UTF-8 JSONL：空文件有效，一个末尾 LF 可选，完整但没有末尾 LF 的旧记录可读取，下次成功提交时规范化为 LF。空白行、额外空行、CRLF、非法 UTF-8、截断 JSON、错误字段、重复 id、target 与文件名不符均报告路径/行号或编码错误，不跳过任何行；验证整个队列后才交付队头。错误原因为 `InboxError.cause`，外层存储错误还包含原因文本及可用的 messageId。名称限制复用 ILU-6；root 拒绝符号链接/非目录，inbox 拒绝符号链接、硬链接和非普通文件，每次操作重验目录与锁的身份，文件打开使用 NOFOLLOW 并复核 inode。
 
-所有修改均在同目录独占创建临时文件，写入、fsync、原子 rename 后 fsync 目录。提交前故障保留原文件；rename 后目录 fsync 失败属于**提交结果不确定**，文件可能已改变，错误仍会停止整个总线，必须人工按 messageId 检查，不能盲目重投/重跑。进程意外退出可能留下 `.pending-*`，这些不是消息记录，只有排除活跃所有者后才可人工清理。跨崩溃不承诺 exactly-once，模型成功但 ack 前崩溃仍可能在显式恢复后重复执行。
+所有修改均在同目录独占创建临时文件，写入、fsync、原子 rename 后 fsync 目录。提交前故障保留原文件；rename 后目录 fsync 失败属于**提交结果不确定**，文件可能已改变，错误仍会停止受影响路由（共享所有权失效时停止整个总线），必须人工按 messageId 检查，不能盲目重投/重跑。进程意外退出可能留下 `.pending-*`，这些不是消息记录，只有排除活跃所有者后才可人工清理。跨崩溃不承诺 exactly-once，模型成功但 ack 前崩溃仍可能在显式恢复后重复执行。
 
 `.teammates_inbox/.owner.lock` 使用原子 mkdir 独占；同进程的另一总线和其他 CLI 都立即报 `OWNERSHIP`，不会等待或抢占。正常 close 释放锁，异常退出的残留锁必须确认所有 CLI 已停止后手工移除，然后检查/归档 inbox 并选择显式恢复；不按 PID/超时自动删除锁。仅支持具备本地原子 mkdir/rename、NOFOLLOW 和目录 fsync 语义的文件系统；未支持共享网络盘。工作区仍是可信文件系统边界，不承诺防御拥有同等文件权限的恶意进程在检查与操作间反复替换目录。所有运行文件均被 `.gitignore` 排除，已有文件不会被清空。
 
@@ -96,12 +96,23 @@ stop 是幂等的：停止接纳新工作，等待当前 loop 收尾，成功的
 
 `TeamRuntime.create({ workspace, client, model, tools, skills, bus?, runAgent? })` 注册 main inbox 并建立会话所有者。默认打开真实 MessageBus，测试可注入 bus 和 runAgent。宿主通过 `runtime.clientFor('main')` 将绑定身份的 client 注入 `AgentOptions.team`；teammate 的 client 由运行时注入。`AgentOptions.role` 与 `ToolContext.role` 默认 main，teammate 使用显式允许列表；runAgent 对模型 schema 过滤，dispatchTool 再独立检查角色，完整工具表也不能绕过限制。旧 subagent 不获得团队 client，继续沿用原有行为。
 
-`spawn_teammates` 和 `send_message` 已注册到 schemas/handlers/index。未注入团队服务时明确返回“团队运行时未启用”。send_message 只调用绑定 client 完成验证与持久化入队；本期不增加自动 inbox 消费、idle timer 或 CLI 生命周期接线，这些仍由后续任务实现。
+`spawn_teammates` 和 `send_message` 已注册到 schemas/handlers/index。未注入团队服务时明确返回“团队运行时未启用”。send_message 只调用绑定 client 完成验证与持久化入队；ILU-10 已接入 teammate 自动 inbox 消费和 idle timer；CLI 生命周期接线仍由后续任务实现。
 
 批量启动先复制和校验所有参数，在 registry gate 内重验并预留全部名称，所有 inbox 注册成功后才公开路由并调度独立初始轮次。工具返回状态快照，不等待模型完成。同批模型可立即互相投递；不同 teammate 并行，同一 teammate 的所有轮次经过自己的 AgentTurns。
 
 初始化失败时整个新批次不运行模型，返回每个成员的 startup/storage 错误。`MessageBus.unregisterEmpty` 只撤销本次已成功注册且无消息、无预留消费的路由，不删除文件；已有消息、坏文件及其他批次均保留。空注册清理后移除对应会话，已使用名称仍保留，禁止隐式重试。非空或无法确认安全的注册保留为 stopped 会话，错误可通过 status 和日志检查。共享存储失败停止全团队接纳。
 
-`runtime.runTurn(name, input)` 为后续消费者保留执行入口：它复用该 teammate 的 messages、agentId、bg_task_map、AgentTurns，始终 memory:false，不传入 cron。消费者须先用 teamMessageToUserEvent 包装消息，并在成功后 ack；此入口本身不读取、ack 或轮询 inbox。失败轮次记录错误并停止该会话，不自动重试。`runtime.stop()` 幂等停止接纳，等待已接纳的初始化、I/O 与模型轮次，跳过未开始的排队轮次，再关闭总线；不清空任何 inbox。
+`runtime.runTurn(name, input)` 经过该 teammate 的 TeamConsumer，复用 messages、agentId、bg_task_map、AgentTurns，始终 memory:false，不传入 cron。该入口执行输入后立即排空 inbox，再返回该直接输入的 AgentResult；drain 失败会拒绝该调用。消费者负责 teamMessageToUserEvent 包装和成功后的 ack，宿主不能另行 peek/ack。失败轮次记录错误并停止该会话，不自动重试。`runtime.stop()` 幂等停止接纳，等待已接纳的初始化、I/O 与模型轮次，跳过未开始的排队轮次，再关闭总线；不清空任何 inbox。
 
 ILU-8 测试使用 mock runAgent/模型响应及临时目录，覆盖并发启动、即时返回、同批寻址、跨轮次状态隔离、重名竞态、初始化回滚与消息保留、停止竞态、模型/存储失败和 schema/dispatch 双层角色约束。
+
+
+## 串行消费与 idle 轮询（ILU-10）
+
+`TeamConsumer`（`src/agent-team/consumer.ts`）支持任意已注册路由，包括 main；注入 name、agentId、AgentTurns、bus、execute、onState、onError。TeamRuntime 为每个已成功注册的 teammate 创建一个消费者，初始 prompt 和 `runTurn` 都调用 `consumer.run(input)`。main 的 CLI/cron 接线仍留给宿主集成；接线时所有执行入口必须经过同一个 consumer，不能绕过它直接运行 AgentTurns，否则无法同步撤销 idle timer。
+
+`run` 同步清除 timer 并预留 gate，排队的直接输入在 gate 内再次检查停止状态。每次输入完成后迭代执行 peek → runAgent → ack，直到无消息；消息只在 gate 内预留，执行期间的 append 会在下一次迭代被读到。`start()` 幂等安排唯一 1000ms 单次 timer，`tick()` 先清 timer 再 runIfIdle，陈旧 tick 撞上直接执行时也不会留下 timer。最外层 finally 在 gate 释放后恢复 idle timer；若空读取后到恢复 timer 前收到消息，下次 tick 接住。
+
+模型异常、未完成结果、peek/ack 异常均停止自动消费，日志包含 agentId 与可用的 messageId，status 保存阶段和原因；没有可用消息 ID 时日志明确标记 direct/unknown。模型失败保留队首和未读消息并调用 bus.fail；即使记录失败状态失败，也保留内存错误并停止。局部存储错误不停止健康路由，共享所有权失效仍全局拒绝 I/O。stop 同步禁止新工作和撤销 timer，等待当前模型/ack 收尾，跳过尚未开始的输入和下一条消息；finally 不会重建 timer。
+
+测试用 fake timers 与受控 promise 验证 999/1000ms、单 timer、运行中零 timer、FIFO 与 drain 中入队、tick/直接输入/loop 完成竞态、每 agent 最大并发 1、跨 agent 并行、空读取到 idle 竞态、3000 条迭代排空，以及失败/stop 不复活。真实临时 inbox 测试验证消息包装、稳定会话、成功删除、失败保留与局部存储故障隔离；不调用真实模型。

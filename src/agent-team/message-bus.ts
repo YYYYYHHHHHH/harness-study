@@ -33,8 +33,13 @@ export class MessageBus implements TeamMessageBus {
     try { return await operation(); }
     catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
-      this.storageFailure = new InboxError('STORAGE', `Inbox I/O or integrity failure; all bus operations stopped; inspect before reopening: ${detail}`, this.store.path(target), messageId, { cause });
-      throw this.storageFailure;
+      const failure = new InboxError('STORAGE', `Inbox I/O or integrity failure; route stopped; inspect before reopening: ${detail}`, this.store.path(target), messageId, { cause });
+      this.failures.set(target, failure);
+      // A broken inbox must not stop healthy peers. Loss of the shared root/lock
+      // does invalidate every route, so keep the existing fail-closed behavior there.
+      try { await this.store.assertOwnership(); }
+      catch { this.storageFailure = failure; }
+      throw failure;
     }
   }
 
@@ -50,6 +55,7 @@ export class MessageBus implements TeamMessageBus {
     const recover = options.recover === true;
     return this.exclusive(async () => {
       parseAgentName(target);
+      if (this.failures.has(target)) throw this.failures.get(target);
       if (this.agents.has(target)) throw new InboxError('REGISTERED', 'Agent is already registered', this.store.path(target));
       const messages = await this.storage(target, () => this.store.register(target));
       if (messages.length && !recover) {
