@@ -91,3 +91,17 @@ stop 是幂等的：停止接纳新工作，等待当前 loop 收尾，成功的
 所有修改均在同目录独占创建临时文件，写入、fsync、原子 rename 后 fsync 目录。提交前故障保留原文件；rename 后目录 fsync 失败属于**提交结果不确定**，文件可能已改变，错误仍会停止整个总线，必须人工按 messageId 检查，不能盲目重投/重跑。进程意外退出可能留下 `.pending-*`，这些不是消息记录，只有排除活跃所有者后才可人工清理。跨崩溃不承诺 exactly-once，模型成功但 ack 前崩溃仍可能在显式恢复后重复执行。
 
 `.teammates_inbox/.owner.lock` 使用原子 mkdir 独占；同进程的另一总线和其他 CLI 都立即报 `OWNERSHIP`，不会等待或抢占。正常 close 释放锁，异常退出的残留锁必须确认所有 CLI 已停止后手工移除，然后检查/归档 inbox 并选择显式恢复；不按 PID/超时自动删除锁。仅支持具备本地原子 mkdir/rename、NOFOLLOW 和目录 fsync 语义的文件系统；未支持共享网络盘。工作区仍是可信文件系统边界，不承诺防御拥有同等文件权限的恶意进程在检查与操作间反复替换目录。所有运行文件均被 `.gitignore` 排除，已有文件不会被清空。
+
+## 团队运行时与批量启动（ILU-8）
+
+`TeamRuntime.create({ workspace, client, model, tools, skills, bus?, runAgent? })` 注册 main inbox 并建立会话所有者。默认打开真实 MessageBus，测试可注入 bus 和 runAgent。宿主通过 `runtime.clientFor('main')` 将绑定身份的 client 注入 `AgentOptions.team`；teammate 的 client 由运行时注入。`AgentOptions.role` 与 `ToolContext.role` 默认 main，teammate 使用显式允许列表；runAgent 对模型 schema 过滤，dispatchTool 再独立检查角色，完整工具表也不能绕过限制。旧 subagent 不获得团队 client，继续沿用原有行为。
+
+`spawn_teammates` 和 `send_message` 已注册到 schemas/handlers/index。未注入团队服务时明确返回“团队运行时未启用”。send_message 只调用绑定 client 完成验证与持久化入队；本期不增加自动 inbox 消费、idle timer 或 CLI 生命周期接线，这些仍由后续任务实现。
+
+批量启动先复制和校验所有参数，在 registry gate 内重验并预留全部名称，所有 inbox 注册成功后才公开路由并调度独立初始轮次。工具返回状态快照，不等待模型完成。同批模型可立即互相投递；不同 teammate 并行，同一 teammate 的所有轮次经过自己的 AgentTurns。
+
+初始化失败时整个新批次不运行模型，返回每个成员的 startup/storage 错误。`MessageBus.unregisterEmpty` 只撤销本次已成功注册且无消息、无预留消费的路由，不删除文件；已有消息、坏文件及其他批次均保留。空注册清理后移除对应会话，已使用名称仍保留，禁止隐式重试。非空或无法确认安全的注册保留为 stopped 会话，错误可通过 status 和日志检查。共享存储失败停止全团队接纳。
+
+`runtime.runTurn(name, input)` 为后续消费者保留执行入口：它复用该 teammate 的 messages、agentId、bg_task_map、AgentTurns，始终 memory:false，不传入 cron。消费者须先用 teamMessageToUserEvent 包装消息，并在成功后 ack；此入口本身不读取、ack 或轮询 inbox。失败轮次记录错误并停止该会话，不自动重试。`runtime.stop()` 幂等停止接纳，等待已接纳的初始化、I/O 与模型轮次，跳过未开始的排队轮次，再关闭总线；不清空任何 inbox。
+
+ILU-8 测试使用 mock runAgent/模型响应及临时目录，覆盖并发启动、即时返回、同批寻址、跨轮次状态隔离、重名竞态、初始化回滚与消息保留、停止竞态、模型/存储失败和 schema/dispatch 双层角色约束。

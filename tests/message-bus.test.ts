@@ -325,3 +325,32 @@ describe('I/O failures and ownership', () => {
     expect((await fs.stat(join(root, '.owner.lock'))).isDirectory()).toBe(true);
   });
 });
+
+describe('initialization registration rollback', () => {
+  it('releases only empty unused routes while preserving files, messages and reservations', async () => {
+    const bus = await ready();
+    expect(await bus.unregisterEmpty('unknown')).toBe(true);
+    expect(await bus.unregisterEmpty('worker')).toBe(true);
+    expect(await disk()).toBe('');
+    await bus.register('worker');
+    const message = await send(bus);
+    expect(await bus.unregisterEmpty('worker')).toBe(false);
+    expect(await bus.peek('worker')).toEqual(message);
+    expect(await bus.unregisterEmpty('worker')).toBe(false);
+    await bus.fail('worker', message.id, new Error('failed'));
+    expect(await bus.unregisterEmpty('worker')).toBe(false);
+    expect(await disk()).toBe(encodeInboxMessage(message));
+    await bus.close();
+    await expect(bus.unregisterEmpty('worker')).rejects.toMatchObject({ code: 'CLOSED' });
+  });
+
+  it('can release an empty route after unrelated corrupt storage stops normal admission', async () => {
+    const bus = await ready();
+    await fs.writeFile(join(root, 'bad.jsonl'), 'broken\n');
+    await expect(bus.register('bad')).rejects.toMatchObject({ code: 'STORAGE' });
+    expect(await bus.unregisterEmpty('worker')).toBe(true);
+    expect(await disk()).toBe('');
+    await expect(bus.register('worker')).rejects.toMatchObject({ code: 'STORAGE' });
+    expect(await fs.readFile(join(root, 'bad.jsonl'), 'utf8')).toBe('broken\n');
+  });
+});

@@ -30,7 +30,7 @@ export interface MessageValidationContext {
   knownAgents: ReadonlySet<string>;
 }
 
-/** Protocol schemas only: registration awaits the team runtime implementation. */
+/** Shared protocol schemas, registered by the tools module. */
 export const teamToolSchemas: ChatCompletionFunctionTool[] = [
   { type: 'function', function: {
     name: 'spawn_teammates', description: '主 agent 批量创建常驻 teammate；名称在工作区团队内唯一。',

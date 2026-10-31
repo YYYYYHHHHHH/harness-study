@@ -1,3 +1,4 @@
+import { teamHandlers } from './team.js';
 import { randomUUID } from 'node:crypto';
 import { taskHandlers } from './tasks.js';
 import { cronHandlers } from './cron.js';
@@ -189,4 +190,5 @@ export const toolHandlers: Record<string, ToolHandler> = {
   },
   ...taskHandlers,
   ...cronHandlers,
+  ...teamHandlers,
 };

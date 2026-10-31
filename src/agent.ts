@@ -1,4 +1,6 @@
 import type OpenAI from 'openai';
+import { toolsForTeamRole } from './agent-team/capabilities.js';
+import type { AgentTeamClient, TeamAgentRole } from './agent-team/types.js';
 import { randomUUID } from 'node:crypto';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -36,6 +38,8 @@ export interface AgentOptions {
   /** Stable main identity across user turns; subagents receive unique identities. */
   agentId?: string;
   cron?: ToolContext['cron'];
+  role?: TeamAgentRole;
+  team?: AgentTeamClient;
   /** Defaults to a conversation-local map, reused when messages is reused. */
   bg_task_map?: BackgroundTaskMap;
 }
@@ -50,15 +54,16 @@ export interface AgentResult {
 }
 
 export async function runAgent({
-  client, model, input, systemPrompt, tools, skills: providedSkills, messages: history, memory: providedMemory, logPrefix = '', agentId = `agent:${randomUUID()}`, cron, bg_task_map: providedBackgroundTasks,
+  client, model, input, systemPrompt, tools: providedTools, role = 'main', team, skills: providedSkills, messages: history, memory: providedMemory, logPrefix = '', agentId = `agent:${randomUUID()}`, cron, bg_task_map: providedBackgroundTasks,
 }: AgentOptions): Promise<AgentResult> {
+  const tools = toolsForTeamRole(providedTools, role);
   const directory = process.cwd();
   const usageTracker = new TokenUsageTracker();
   const skills = providedSkills ?? await scanSkills();
   const messages = history ?? [];
   const bg_task_map = providedBackgroundTasks ?? conversationBackgroundTasks.get(messages) ?? new Map();
   conversationBackgroundTasks.set(messages, bg_task_map);
-  const context: ToolContext = { client, model, tools, skills, logPrefix, agentId, runId: randomUUID(), cron, bg_task_map };
+  const context: ToolContext = { client, model, tools, skills, logPrefix, agentId, runId: randomUUID(), cron, bg_task_map, role, team };
   const skillsPrompt = tools.some(tool => tool.schema.function.name === 'load_skill')
     ? buildSkillsPrompt(skills)
     : '';

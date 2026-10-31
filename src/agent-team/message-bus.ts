@@ -59,6 +59,24 @@ export class MessageBus implements TeamMessageBus {
     });
   }
 
+  /** Roll back only an empty, unused registration. Keep the file and all messages.
+   * Cleanup remains possible after a storage fault, without reopening admission.
+   */
+  unregisterEmpty(target: string): Promise<boolean> {
+    parseAgentName(target);
+    if (this.closing) return Promise.reject(new InboxError('CLOSED', 'Message bus is closing or closed', this.store.root));
+    const result = this.queue.then(async () => {
+      if (!this.agents.has(target)) return true;
+      if (this.reservations.has(target) || this.failures.has(target)) return false;
+      const messages = await this.storage(target, () => this.store.read(target));
+      if (messages.length) return false;
+      this.agents.delete(target);
+      return true;
+    });
+    this.queue = result.catch(() => {});
+    return result;
+  }
+
   /** Trusted runtime API; a runtime-bound client must authenticate sender first. */
   append(args: SendMessageArgs): Promise<TeamMessage> {
     // Snapshot caller-owned data before asynchronous admission.
