@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AgentTurns } from '../src/agent-turns.js';
-import { TeamConsumer } from '../src/agent-team/consumer.js';
+import { CronConsumer } from '../src/cron/consumer.js';
+import { TeamConsumer, type TeamConsumerOptions } from '../src/agent-team/consumer.js';
 import type { TeamMessage } from '../src/agent-team/protocol.js';
 import type { AgentResult } from '../src/agent.js';
 
@@ -12,7 +13,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const consumers: TeamConsumer[] = [];
-function setup(name = 'worker') {
+function setup(name = 'worker', options: Pick<TeamConsumerOptions, 'maxMessagesPerTurn' | 'haltOnDirectError'> = {}) {
   const queue: TeamMessage[] = [];
   let reserved: string | undefined;
   const turns = new AgentTurns();
@@ -34,7 +35,7 @@ function setup(name = 'worker') {
   const execute = vi.fn(async (_input: string) => done);
   const onState = vi.fn();
   const onError = vi.fn();
-  const consumer = new TeamConsumer({ name, agentId: `agent:${name}`, turns, bus, execute, onState, onError });
+  const consumer = new TeamConsumer({ ...options, name, agentId: `agent:${name}`, turns, bus, execute, onState, onError });
   consumers.push(consumer);
   let nextId = 0;
   const send = (content: string) => {
@@ -274,4 +275,89 @@ it('finishes and acknowledges an in-flight message on stop without draining the 
   expect(t.bus.acknowledge).toHaveBeenCalledWith('worker', first.id);
   expect(t.queue).toEqual([unread]);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+
+it('preserves inbox polling deadlines across empty cron ticks on the shared gate', async () => {
+  const t = setup('main');
+  const scheduler = { create: vi.fn(), cancel: vi.fn(), list: vi.fn(), take: vi.fn().mockResolvedValue(undefined), finish: vi.fn() };
+  const cron = new CronConsumer(scheduler, t.turns, vi.fn(), vi.fn());
+  // Cron's interval is registered first, just as in the CLI.
+  cron.start();
+  t.consumer.start();
+  try {
+    for (let i = 0; i < 4; i++) {
+      t.send(`message-${i}`);
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(t.queue).toEqual([]);
+    }
+    expect(scheduler.take).toHaveBeenCalledTimes(4);
+    expect(t.execute).toHaveBeenCalledTimes(4);
+    const release = deferred<void>();
+    const external = t.turns.run(() => release.promise);
+    expect(vi.getTimerCount()).toBe(1); // only cron's interval; inbox is suspended
+    t.consumer.tick(); // stale callback while another entry point owns the gate
+    release.resolve();
+    await external;
+    t.send('after external turn');
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(t.queue).toEqual([]);
+  } finally { await cron.stop(); }
+});
+
+it('executes cron within its existing reservation and drains immediately without a nested gate', async () => {
+  const t = setup('main');
+  t.send('report');
+  const job = { id: 'cron', prompt: 'scheduled', drauble: false, recurring: false, cron: '* * * * * *' };
+  const scheduler = { create: vi.fn(), cancel: vi.fn(), list: vi.fn(), take: vi.fn().mockResolvedValueOnce(job), finish: vi.fn() };
+  const error = vi.fn();
+  const cron = new CronConsumer(scheduler, t.turns, async job => { await t.consumer.runInTurn(job.prompt); }, error);
+  cron.tick();
+  await vi.advanceTimersByTimeAsync(0);
+  await cron.stop();
+  expect(t.execute.mock.calls.map(([input]) => input.startsWith('{') ? JSON.parse(input).message.content : input))
+    .toEqual(['scheduled', 'report']);
+  expect(error).not.toHaveBeenCalled();
+  expect(scheduler.finish).toHaveBeenCalledWith('cron');
+  expect(t.turns.busy).toBe(false);
+  expect(() => t.consumer.runInTurn('outside gate')).toThrow('gate');
+});
+
+
+it('yields a continuously replenished main inbox to user input and cron', async () => {
+  const t = setup('main', { maxMessagesPerTurn: 2, haltOnDirectError: false });
+  const first = deferred<AgentResult>();
+  t.send('seed');
+  t.execute.mockImplementation(async input => {
+    if (input === 'user') return done;
+    t.send('more');
+    return first.promise;
+  });
+  t.consumer.tick();
+  await Promise.resolve();
+  await Promise.resolve();
+  const user = t.consumer.run('user');
+  first.resolve(done);
+  await user;
+  expect(t.execute.mock.calls[1]).toEqual(['user']);
+  expect(t.queue.length).toBeGreaterThan(0);
+  expect(t.turns.busy).toBe(false);
+  const cron = vi.fn(async () => {});
+  await t.turns.runIfIdle(cron);
+  expect(cron).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(t.queue.length).toBeGreaterThan(0);
+  expect(t.turns.busy).toBe(false);
+});
+
+it('keeps main usable after a direct cron failure but still halts a failing inbox head', async () => {
+  const t = setup('main', { haltOnDirectError: false });
+  t.execute.mockRejectedValueOnce(new Error('cron failed'));
+  await expect(t.turns.run(() => t.consumer.runInTurn('cron'))).rejects.toThrow('cron failed');
+  await expect(t.consumer.run('user')).resolves.toEqual(done);
+  const head = t.send('bad inbox');
+  t.execute.mockRejectedValueOnce(new Error('inbox failed'));
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(t.onError).toHaveBeenCalledWith(expect.objectContaining({ messageId: head.id }));
+  expect(t.queue).toEqual([head]);
 });

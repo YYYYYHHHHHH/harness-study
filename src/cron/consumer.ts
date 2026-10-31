@@ -4,6 +4,7 @@ import type { CronJob, CronJobService } from './types.js';
 export class CronConsumer {
   private timer?: ReturnType<typeof setInterval>;
   private active?: Promise<void>;
+  private stopped = false;
 
   constructor(
     private scheduler: CronJobService,
@@ -13,14 +14,16 @@ export class CronConsumer {
   ) {}
 
   start(): void {
-    if (!this.timer) this.timer = setInterval(() => { this.tick(); }, 1000);
+    if (!this.stopped && !this.timer) this.timer = setInterval(() => { this.tick(); }, 1000);
   }
 
   tick(): void {
-    if (this.active) return;
+    if (this.stopped || this.active) return;
     const turn = this.turns.runIfIdle(async () => {
+      if (this.stopped) return;
       const job = await this.scheduler.take();
-      if (!job) return;
+      // A dequeued job remains pending on disk if shutdown overtakes the read.
+      if (!job || this.stopped) return;
       try { await this.execute(job); }
       catch (error) { this.onError(error); }
       finally { await this.scheduler.finish(job.id); }
@@ -28,6 +31,7 @@ export class CronConsumer {
     if (!turn) return;
     this.active = turn.catch(error => {
       // Storage/worker failures halt consumption; the saved pending job survives restart.
+      this.stopped = true;
       clearInterval(this.timer);
       this.timer = undefined;
       this.onError(error);
@@ -35,6 +39,7 @@ export class CronConsumer {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     clearInterval(this.timer);
     this.timer = undefined;
     await this.active;

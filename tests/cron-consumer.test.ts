@@ -32,6 +32,7 @@ describe('shared agent turn gate and cron consumer', () => {
     manual.resolve();
     await run;
     consumer.tick();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalled());
     await consumer.stop();
     expect(execute).toHaveBeenCalledExactlyOnceWith(job);
     expect(scheduler.finish).toHaveBeenCalledExactlyOnceWith(job.id);
@@ -74,6 +75,7 @@ describe('shared agent turn gate and cron consumer', () => {
     const { scheduler, turns, execute, onError, consumer } = fixture();
     execute.mockRejectedValue(new Error('model failed'));
     consumer.tick();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
     await consumer.stop();
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'model failed' }));
     expect(scheduler.finish).toHaveBeenCalledWith(job.id);
@@ -117,4 +119,21 @@ describe('shared agent turn gate and cron consumer', () => {
     await expect(next).resolves.toBe('next');
     expect(turns.busy).toBe(false);
   });
+});
+
+
+it.each(['before-take', 'during-take'])('does not launch cron work when shutdown occurs %s', async phase => {
+  const { scheduler, execute, consumer } = fixture();
+  const dequeue = deferred();
+  vi.mocked(scheduler.take).mockImplementation(async () => { await dequeue.promise; return job; });
+  consumer.tick();
+  if (phase === 'during-take') await Promise.resolve();
+  const stopped = consumer.stop();
+  dequeue.resolve();
+  await stopped;
+  consumer.start();
+  consumer.tick();
+  expect(execute).not.toHaveBeenCalled();
+  expect(scheduler.finish).not.toHaveBeenCalled();
+  expect(scheduler.take).toHaveBeenCalledTimes(phase === 'during-take' ? 1 : 0);
 });
