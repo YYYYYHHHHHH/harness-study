@@ -11,6 +11,9 @@ export interface TeamConsumerOptions {
   execute(input: string): Promise<AgentResult>;
   onState(state: TeamAgentState): void;
   onError(error: TeamAgentError): void;
+  /** Bound main's drain so pending user input and cron get another opportunity. */
+  maxMessagesPerTurn?: number;
+  haltOnDirectError?: boolean;
 }
 
 /** One serial channel for initial/direct input, post-loop draining and idle polling.
@@ -22,12 +25,22 @@ export class TeamConsumer {
   private stopped = false;
   private failed = false;
   private stopPromise?: Promise<void>;
+  private pollDue?: number;
+  private readonly unsubscribe: () => void;
 
-  constructor(private readonly options: TeamConsumerOptions) {}
+  constructor(private readonly options: TeamConsumerOptions) {
+    this.unsubscribe = options.turns.onBusyChange(busy => {
+      if (busy) {
+        this.clearTimer(false);
+        if (!this.stopped && !this.failed) options.onState('running');
+      } else this.start();
+    });
+  }
 
-  private clearTimer(): void {
+  private clearTimer(resetDeadline = true): void {
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
+    if (resetDeadline) this.pollDue = undefined;
   }
 
   private assertOpen(): void {
@@ -38,14 +51,18 @@ export class TeamConsumer {
   start(): void {
     if (this.stopped || this.failed || this.options.turns.busy || this.timer !== undefined) return;
     this.options.onState('idle');
-    this.timer = setTimeout(() => this.tick(), 1000);
+    // Empty cron polls must not postpone this deadline by another second forever.
+    this.pollDue ??= Date.now() + 1000;
+    this.timer = setTimeout(() => this.tick(), Math.max(0, this.pollDue - Date.now()));
     this.timer.unref?.();
   }
 
   /** Clear even a stale tick's timer before checking busy. Never peek outside the gate. */
   tick(): void {
-    this.clearTimer();
+    this.clearTimer(false);
     if (this.stopped || this.failed) return;
+    if (this.options.turns.busy) return;
+    this.pollDue = undefined;
     const task = this.options.turns.runIfIdle(() => this.consume());
     if (task) {
       this.options.onState('running');
@@ -62,6 +79,14 @@ export class TeamConsumer {
     });
     this.options.onState('running');
     return this.track(task);
+  }
+
+  /** Host-only: cron already owns the shared gate. Never reserve it recursively. */
+  runInTurn(input: string): Promise<AgentResult> {
+    this.assertOpen();
+    if (!this.options.turns.busy) throw new Error('runInTurn requires the agent turn gate');
+    this.clearTimer();
+    return this.track(this.consume(input).then(result => result!));
   }
 
   private track<T>(task: Promise<T>): Promise<T> {
@@ -86,10 +111,14 @@ export class TeamConsumer {
     if (this.stopped || this.failed) return;
     let message: TeamMessage | undefined;
     let phase: TeamAgentError['phase'] = 'model';
+    let direct = input !== undefined;
     try {
       this.assertOpen();
       const result = input === undefined ? undefined : await this.execute(input);
-      while (!this.stopped && !this.failed) {
+      direct = false;
+      let consumed = 0;
+      while (!this.stopped && !this.failed && consumed < (this.options.maxMessagesPerTurn ?? Infinity)) {
+        if (this.options.maxMessagesPerTurn && this.options.turns.queued) break;
         phase = 'storage';
         message = await this.options.bus.peek(this.options.name);
         if (!message || this.stopped || this.failed) break;
@@ -98,9 +127,13 @@ export class TeamConsumer {
         phase = 'storage';
         await this.options.bus.acknowledge(this.options.name, message.id);
         message = undefined;
+        consumed++;
       }
       return result;
     } catch (cause) {
+      // Shutdown preserves the reserved head; cancellation is not a failed route.
+      if (this.stopped) throw cause;
+      if (direct && this.options.haltOnDirectError === false) throw cause;
       this.failed = true;
       this.clearTimer();
       const error: TeamAgentError = {
@@ -123,6 +156,7 @@ export class TeamConsumer {
     if (!this.stopPromise) {
       this.stopped = true;
       this.clearTimer();
+      this.unsubscribe();
       this.options.onState(this.options.turns.busy ? 'stopping' : 'stopped');
       this.stopPromise = Promise.allSettled([...this.active]).then(() => { this.options.onState('stopped'); });
     }

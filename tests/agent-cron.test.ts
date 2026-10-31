@@ -53,6 +53,7 @@ it('creates a job through runAgent tool context and injects its prompt into the 
     now += 1000;
     engine.tick();
     consumer.tick();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(3));
     await consumer.stop();
     expect(onError).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(3);

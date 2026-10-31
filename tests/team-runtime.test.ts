@@ -331,3 +331,28 @@ it('stops only the target when durable append fails and records its message id',
   expect(runner.mock.calls.at(-1)![0].input).toBe(teamMessageToUserEvent(message).content);
   expect(runtime.status()[1].state).toBe('idle');
 });
+
+it('retains an admitted delivery that finishes during shutdown without waking main', async () => {
+  const turns = new (await import('../src/agent-turns.js')).AgentTurns();
+  const execute = vi.fn().mockResolvedValue(done);
+  runtime.registerMain({ agentId: 'main:test', turns, execute }).start();
+  await runtime.spawnTeammates({ teammates: [{ name: 'writer', prompt: 'write' }] });
+  const admitted = deferred<void>();
+  const release = deferred<void>();
+  const append = bus.append.bind(bus);
+  vi.spyOn(bus, 'append').mockImplementation(async args => {
+    admitted.resolve();
+    await release.promise;
+    return append(args);
+  });
+  const delivery = runtime.clientFor('writer').sendMessage({ sender: 'writer', target: 'main', content: 'during shutdown' });
+  await admitted.promise;
+  const stopping = runtime.stop();
+  release.resolve();
+  const receipt = await delivery;
+  await stopping;
+  expect(receipt.status).toBe('queued');
+  expect(JSON.parse(await fs.readFile(inboxPath(workspace, 'main'), 'utf8'))).toMatchObject({ id: receipt.id, content: 'during shutdown' });
+  expect(execute).not.toHaveBeenCalled();
+  await expect(runtime.clientFor('writer').sendMessage({ sender: 'writer', target: 'main', content: 'too late' })).rejects.toThrow('停止');
+});
