@@ -1,0 +1,117 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "定义 agent_team 协议、角色能力与生命周期契约",
+        "description": "明确 spawn_teammates、send_message、JSONL 消息格式及主 agent/teammate 的执行边界，为后续模块提供统一契约。",
+        "details": "需求：主 agent 调用 spawn_teammates 批量创建常驻 teammate；每个 agent 有独立循环和 inbox，消息通过消息总线投递，loop 结束后逐条消费至清空，空闲时每 1000ms 检查，运行时停止轮询。\n建议 API（兼容 src/tools/dispatch.ts 对根参数必须为对象的约束）：\nspawn_teammates({teammates:[{name:string,prompt:string}]})\nsend_message({sender:string,target:string,content:string})\nJSONL 消息建议包含 id、sender、target、content、created_at；发送者绑定运行时身份，不能伪造。\n路径固定为 <工作区>/.teammates_inbox/{agent_name}.jsonl，主 agent 使用保留名 main。名称必须唯一且为安全文件名，拒绝路径分隔符、..、空值及 main 冲突。\n规划假设：独立线程指独立会话与可并发的异步 runAgent 循环，首版无需操作系统 Worker；不同 agent 可并发，同一 agent 永不重入。每个 teammate 独立 messages、稳定 agentId、bg_task_map、AgentTurns；memory:false，避免共享主 agent 记忆。\n能力：主 agent 保留现有工具并新增两个工具；teammate 保留基础文件/bash/skills/todo_write 展示工具与 send_message，禁用 create_tasks/clamic_task/get_tasks_detail/complate_tasks、所有 cron 工具及 spawn_subagent/spawn_teammates。todo_write 仅展示计划，不属于持久化 task 系统。旧 spawn_subagent 不应意外获得新团队管理能力。\n生命周期 idle/running/stopping/stopped（错误需可观测）。正常运行保证 FIFO、同一消息不被并发消费、append 与 dequeue 不丢数据；模型/存储异常保留可恢复记录并停止自动重试，避免死循环，不承诺跨崩溃 exactly-once 或自动恢复会话。退出保留 inbox，不自动清空遗留文件。\n消息是输入数据，发送者和正文分开封装为 user 事件，不拼入 system prompt；轮询是内部 timer，不使用 cron tool。\n本任务交付类型/API/设计契约；当前请求仅规划，待用户另行授权实现。",
+        "testStrategy": "协议测试覆盖空数组、重复/非法名称、空 prompt/content、未知字段、sender 不匹配与非法目标；审查参数 schema 和实际 dispatcher 兼容。",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "实现 JSONL inbox 存储与消息总线",
+        "description": "为每个 agent 建立 .teammates_inbox/{agent_name}.jsonl，并提供统一的注册、发送和 FIFO 消费接口。",
+        "details": "建议模块 src/agent-team/inbox.ts、message-bus.ts（最终命名可调整）。所有发送与消费通过同一总线，不能在 handler 中直接改文件。创建 inbox 不截断既有数据；多 agent 写同一收件箱与消费操作必须在同一互斥机制下完成，原子替换或等效事务避免 read/modify/write 丢失并发 append。\n提供 register/send/take 或 reserve/ack 等等效 API，每次仅取一条，正常成功按 FIFO 消费；明确运行失败时保留/隔离消息的策略与错误信息，禁止无限自动重试。记录 id 便于追踪。\n限制文件路径在 inbox 根目录内；检查符号链接和非普通文件；处理缺目录、空文件、末尾换行、损坏 JSON/截断行、I/O 失败，不能静默丢行。多 CLI 实例访问相同根目录应明确拒绝或通过锁协调，不能让两个消费者处理同一队列。\n运行文件后续加入 .gitignore，现有文件不清空；不引入 Redis、数据库或外部服务。",
+        "testStrategy": "临时目录测试：并发多发送者+消费者无丢失/重复、FIFO、一条一条取、文件重开与遗留内容保留、非法路径/符号链接、损坏行与写入失败可观测。",
+        "status": "pending",
+        "dependencies": [
+          1
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "实现 teammate 运行时与 spawn_teammates 批量启动",
+        "description": "创建团队注册表和独立会话，注册 spawn_teammates 工具，初始化所有 inbox 后并发启动各 teammate 的初始 prompt。",
+        "details": "建议 TeamRuntime 管理 name -> agent 状态。接入 src/agent.ts AgentOptions、src/tools/dispatch.ts ToolContext 和 schemas/handlers/index 注册体系，保持服务注入以便测试。\nspawn_teammates({teammates:[{name,prompt}]}) 先完整校验整批参数和重名，再预留名称并完成该批所有 inbox 注册，随后启动初始 prompt，确保同批 teammate 可互相寻址。返回创建结果，不等待各 agent 完成任务；初始化部分失败需清理本次空注册并报告，不能删除既有消息或产生无人管理的运行实例。\n每个 teammate 有独立 messages、stable agentId、AgentTurns、bg_task_map；复用 client/model/skills 配置，memory:false，日志携带 teammate 名称。会话在后续消息触发时保留历史。\n实施明确角色工具集合：teammate 没有四个持久化 task 工具、三个 cron 工具、spawn_subagent/spawn_teammates；保留 send_message 与基础工具。模型 schema 与 dispatchTool 实际权限一致。旧 spawn_subagent 的过滤逻辑必须排除新增团队工具，避免从主 agent 工具列表继承权限。不要重写已有 subagent 行为。",
+        "testStrategy": "mock runAgent 验证批量并发且工具立即返回、同批注册先于执行、独立历史/身份/后台任务、重复名称整批拒绝、部分初始化失败清理，以及工具 schema 与 dispatch 双层限制。",
+        "status": "pending",
+        "dependencies": [
+          1,
+          2
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "实现 send_message 工具及可寻址的主 agent inbox",
+        "description": "允许主 agent 和 teammate 通过统一消息总线投递消息，支持 teammate 互发及给 main 回信。",
+        "details": "注册 send_message({sender,target,content})，验证非空字符串、未知字段、目标已注册；sender 与当前运行时 agent 的公开名称严格一致，实际身份由上下文提供。主 agent 以 main 寻址，inbox 为 .teammates_inbox/main.jsonl。\n投递完成代表消息已落盘并返回 message id/目标/queued 状态，不代表对方已经处理。不等待目标响应，不在 handler 递归调用目标 runAgent，避免 agent 间等待死锁。消息无论目标忙闲都先落 inbox，消费交给统一 pump。\n消费时携带 id/sender/target 的结构化 user 输入，原样保留正文且隔离于 system 指令。系统提示明确 teammate 如何用 send_message 向 main 汇报结果；首版不自动把每次 finalContent 再发送为第二条重复结果。\n不存在目标、sender 伪造、目标已停止和 I/O 错误要给出明确工具错误。",
+        "testStrategy": "主->队友、队友->队友、队友->main 的投递与回执；繁忙目标先排队；sender 伪造/不存在目标拒绝；正文包含换行/JSON/提示词片段不破坏消息格式；handler 不触发嵌套 agent loop。",
+        "status": "pending",
+        "dependencies": [
+          2,
+          3
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "实现 loop 结束排空与空闲 1 秒轮询状态机",
+        "description": "为每个 agent 提供同一条串行消费通道，将主动排空和定时唤醒统一，严格防止重入和漏唤醒。",
+        "details": "建议 src/agent-team/consumer.ts。初始 prompt 或任意 agent_loop 完成后主动检查 inbox；有消息就 FIFO 取一条作为下一个 runAgent 输入，完成后继续检查，直到清空。使用迭代 drain，避免递归堆栈增长。\nidle 状态只有一个 1000ms timer；tick 发现消息时先同步占用执行 gate、取消 timer，再消费并启动 loop。running 状态完全没有 timer；若 tick 与外部启动相撞，running 检查必须清掉 timer，不能仅跳过。统一 finally 在正常停止且未 shutdown/failed 时恢复 idle timer。\n初始 prompt、直接执行、loop 后检查和 timer 触发都使用同一 agent 的 gate；仅持有 gate 的消费者能 dequeue，不能取出后因 busy 丢消息。不同 agent 独立运行。检查空队列到恢复 timer 之间到达的消息，必须被再次检查或下个 tick 接住。\n模型/存储异常记录 agent/message id、保留失败消息及未读消息，停止该 agent 自动消费，避免无限重试；其他 agent 不受影响。stop 幂等且防止 finally 复活 timer。轮询不调用现有 cron API。",
+        "testStrategy": "Vitest fake timers + controlled promises 覆盖 999/1000ms 唤醒、运行中 timer 数为零、排空期间到达消息、tick/loop 完成同刻竞争、同 agent 最大并发=1、多个 agent 真并发、空->idle 竞态、异常及 stop 后 timer 不重建。",
+        "status": "pending",
+        "dependencies": [
+          2,
+          3
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "集成 CLI 主循环、cron 串行门控与团队退出清理",
+        "description": "将团队生命周期接入主 agent，统一用户输入、cron 和 inbox 的执行门控，完成可运行的端到端流程。",
+        "details": "src/index.ts 启动时创建团队服务并注册 main inbox，将上下文注入 runAgent。主 agent 手工输入、cron 触发、inbox 消息共用当前 AgentTurns 与 messages，不能再创建独立 gate 导致交叉修改主历史。主回合后也执行 inbox drain。\n需要处理现有 CronConsumer.tick 为检查空队列短暂占 gate 的行为：明确所有入口的忙闲通知与 timer stop/start，既不能嵌套 turns.run 导致自锁，也不能饥饿用户输入/cron。保留现有 cron、背景 bash、上下文压缩/快照/记忆处理与 hook 语义。\n更新主/队友 system prompt 以反映工具能力和 send_message 汇报方式，不向 teammate 注入不可用的 task/cron 指令。\nCLI EOF、SIGINT、SIGTERM 先阻止新 spawn/投递/新 loop，停止所有 inbox timers，再等待/按现有策略结束 active loops，最后清理现有 cron 和事件监听。停止过程中到达消息保留在文件，不能触发新 loop；不删除 inbox 或未提交工作。错误日志按 agent 区分，团队异步失败不得成为 unhandled rejection。",
+        "testStrategy": "集成测试验证主用户输入/cron/inbox 无重入，共用主历史且独立队友历史，A->B->main 往返，loop 后即刻消费和闲时唤醒，SIGINT/EOF 清理 timers，无 shutdown 后模型请求及未处理拒绝。",
+        "status": "pending",
+        "dependencies": [
+          4,
+          5
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "补齐 agent_team 竞态、故障与现有能力回归测试",
+        "description": "用可控模型 mock、临时 JSONL 文件和虚拟时钟验证完整团队工作流及现有 agent 能力兼容性。",
+        "details": "增加 tests/agent-team-*.test.ts 等有意义的行为测试；各实现任务应同时补本模块测试，本任务补跨模块验收和回归。\n端到端场景：main 一次创建 A/B；两者初始 prompt 并行；A 给运行中的 B 连发两条；B 首轮结束逐条处理并回复 main；main 空闲 1 秒后唤醒，后续会话保存上下文。验证各消息正常路径消费一次、顺序稳定、inbox 清空和无残留 timer。\n覆盖并发写/取、loop 完成与 tick 相撞、空队列窗口、新 spawn 参数失败、模型错误、损坏 JSONL、退出中的消息，不做实际模型付费调用。\n更新 tests/registry.test.ts 的工具顺序/数量断言，并确认 dispatch、handlers、agent-cron、cron-cli、agent-background、agent-memory、agent-compression 等行为未回归。执行 npm run check、npm test，必要时 npm run test:coverage 检查新增状态转换覆盖，不要求无意义全覆盖。",
+        "testStrategy": "全部单元/集成测试与 TypeScript 检查通过；重点明确并验证无消息丢失、无同 agent 重入、运行期间无 inbox timer、停止后无新 loop。",
+        "status": "pending",
+        "dependencies": [
+          6
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "补充 agent_team 使用说明与运行数据忽略规则",
+        "description": "说明两个工具参数、消息循环行为、限制与排错方式，忽略 .teammates_inbox 运行数据。",
+        "details": "README 增加 spawn_teammates({teammates:[{name,prompt}]}) 与 send_message({sender,target,content}) 示例；展示 main/A/B 寻址和各角色工具范围，说明 logical independent threads、共享工作区、独立历史。\n描述 loop 结束立即逐条排空、空闲 1000ms 轮询、运行中停表和停机清理；明确 queued 回执仅表示持久化、失败消息保留且不自动无限重试、重启不自动恢复 agent 会话，遗留文件不自动删除。\n.gitignore 添加 .teammates_inbox/ 及实际实现选择的同目录临时/锁文件，不覆盖已有未提交内容。\n文档记录真实实现的名称限制、错误处理和启动/退出语义；保持现有 Symphony/Beads 文档不受影响。",
+        "testStrategy": "对照实际 schemas 和集成测试审阅示例，git check-ignore 验证 inbox 与临时文件被忽略；确认文档没有把独立会话描述为 OS 线程或承诺 exactly-once。",
+        "status": "pending",
+        "dependencies": [
+          7
+        ],
+        "priority": "medium",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2026-10-29T01:58:14.464Z",
+      "description": "Default tasks context",
+      "updated": "2026-10-29T01:58:26.155Z"
+    }
+  }
+}

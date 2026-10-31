@@ -1,0 +1,94 @@
+{
+  "project": "harness-study",
+  "tag": "master",
+  "taskFile": ".taskmaster/tasks/tasks.json",
+  "linearParent": {
+    "id": "ILU-5",
+    "uuid": "6e5d3276-63e7-4fb5-9cd8-76c7f9be3b29",
+    "url": "https://linear.app/iluvai/issue/ILU-5/agent-team独立队友循环与-jsonl-消息总线"
+  },
+  "tasks": [
+    {
+      "taskMasterId": 1,
+      "id": "ILU-6",
+      "uuid": "a4893542-c103-47d1-9aa4-f0e443e468d7",
+      "url": "https://linear.app/iluvai/issue/ILU-6/agent-team-18-定义-agent-team-协议角色能力与生命周期契约",
+      "title": "[agent_team 1/8] 定义 agent_team 协议、角色能力与生命周期契约",
+      "dependencies": []
+    },
+    {
+      "taskMasterId": 2,
+      "id": "ILU-7",
+      "uuid": "9f6018fe-3858-48d7-a3f9-ad2487577e50",
+      "url": "https://linear.app/iluvai/issue/ILU-7/agent-team-28-实现-jsonl-inbox-存储与消息总线",
+      "title": "[agent_team 2/8] 实现 JSONL inbox 存储与消息总线",
+      "dependencies": [
+        1
+      ]
+    },
+    {
+      "taskMasterId": 3,
+      "id": "ILU-8",
+      "uuid": "622364ba-16af-41bf-958e-1bfd8a488181",
+      "url": "https://linear.app/iluvai/issue/ILU-8/agent-team-38-实现-teammate-运行时与-spawn-teammates-批量启动",
+      "title": "[agent_team 3/8] 实现 teammate 运行时与 spawn_teammates 批量启动",
+      "dependencies": [
+        1,
+        2
+      ]
+    },
+    {
+      "taskMasterId": 4,
+      "id": "ILU-9",
+      "uuid": "0cbc239b-72ef-49f9-a224-69bb1bcfed94",
+      "url": "https://linear.app/iluvai/issue/ILU-9/agent-team-48-实现-send-message-工具及可寻址的主-agent-inbox",
+      "title": "[agent_team 4/8] 实现 send_message 工具及可寻址的主 agent inbox",
+      "dependencies": [
+        2,
+        3
+      ]
+    },
+    {
+      "taskMasterId": 5,
+      "id": "ILU-10",
+      "uuid": "339e0991-396c-42e9-bd82-6761a7a14577",
+      "url": "https://linear.app/iluvai/issue/ILU-10/agent-team-58-实现-loop-结束排空与空闲-1-秒轮询状态机",
+      "title": "[agent_team 5/8] 实现 loop 结束排空与空闲 1 秒轮询状态机",
+      "dependencies": [
+        2,
+        3
+      ]
+    },
+    {
+      "taskMasterId": 6,
+      "id": "ILU-11",
+      "uuid": "fbf80846-a67b-4137-8731-ea1fcc1c2f5a",
+      "url": "https://linear.app/iluvai/issue/ILU-11/agent-team-68-集成-cli-主循环cron-串行门控与团队退出清理",
+      "title": "[agent_team 6/8] 集成 CLI 主循环、cron 串行门控与团队退出清理",
+      "dependencies": [
+        4,
+        5
+      ]
+    },
+    {
+      "taskMasterId": 7,
+      "id": "ILU-12",
+      "uuid": "60c41dbf-8f0a-43bc-99d3-0b5f81060f37",
+      "url": "https://linear.app/iluvai/issue/ILU-12/agent-team-78-补齐-agent-team-竞态故障与现有能力回归测试",
+      "title": "[agent_team 7/8] 补齐 agent_team 竞态、故障与现有能力回归测试",
+      "dependencies": [
+        6
+      ]
+    },
+    {
+      "taskMasterId": 8,
+      "id": "ILU-13",
+      "uuid": "4c67b85c-15bc-4444-994b-87ee7465f875",
+      "url": "https://linear.app/iluvai/issue/ILU-13/agent-team-88-补充-agent-team-使用说明与运行数据忽略规则",
+      "title": "[agent_team 8/8] 补充 agent_team 使用说明与运行数据忽略规则",
+      "dependencies": [
+        7
+      ]
+    }
+  ]
+}

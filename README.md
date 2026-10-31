@@ -2,6 +2,9 @@
 
 一个 TypeScript 代码智能体示例，使用 OpenAI Chat Completions API。需要 Node.js 22.9+。
 
+已提供 [Symphony + Linear 本地环境](docs/symphony.md)，使用 `npm run symphony:doctor`
+检查，使用 `npm run symphony:start` 启动。调度与 agent 工作约定见 [WORKFLOW.md](WORKFLOW.md)。
+
 ```bash
 npm install
 cp .env.example .env

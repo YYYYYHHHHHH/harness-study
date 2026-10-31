@@ -7,6 +7,11 @@
     "node": ">=22.9.0"
   },
   "scripts": {
+    "symphony:install": "bash scripts/symphony/launch.sh install",
+    "symphony:doctor": "bash scripts/symphony/launch.sh doctor",
+    "symphony:key": "bash scripts/symphony/launch.sh key",
+    "symphony:start": "bash scripts/symphony/launch.sh start",
+    "symphony:test": "node --test scripts/symphony/check-permissions.mjs scripts/symphony/check-workspace.mjs",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "check": "tsc --noEmit",
     "test": "vitest run",

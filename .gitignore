@@ -12,6 +12,8 @@ coverage/
 .cron/
 # agent_team runtime data, including .pending-* files and .owner.lock/ inside the inbox
 .teammates_inbox/
+.symphony/
+.symphony.env
 
 # Beads / Dolt files (added by bd init)
 .dolt/
