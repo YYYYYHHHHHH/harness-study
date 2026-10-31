@@ -1,0 +1,212 @@
+import { randomUUID } from 'node:crypto';
+import { runAgent, type AgentOptions, type AgentResult } from '../agent.js';
+import { AgentTurns } from '../agent-turns.js';
+import { toolsForTeamRole } from './capabilities.js';
+import { MessageBus } from './message-bus.js';
+import { MAIN_AGENT_NAME, parseSendMessageArgs, parseSpawnTeammatesArgs, type SpawnTeammatesArgs } from './protocol.js';
+import type { AgentTeamClient, AgentTeamLifecycle, TeamAgentStatus, TeammateSession } from './types.js';
+
+export type RuntimeMessageBus = Pick<MessageBus, 'register' | 'unregisterEmpty' | 'append' | 'error' | 'close'>;
+
+export interface TeamRuntimeOptions {
+  workspace: string;
+  client: AgentOptions['client'];
+  model: string;
+  tools: AgentOptions['tools'];
+  skills: NonNullable<AgentOptions['skills']>;
+  /** Shared application instructions; teammate identity is added by the runtime. */
+  systemPrompt?: string;
+  bus?: RuntimeMessageBus;
+  runAgent?: typeof runAgent;
+}
+
+const detail = (error: unknown) => error instanceof Error ? error.message : String(error);
+const snapshot = ({ name, agentId, state, error }: TeamAgentStatus): TeamAgentStatus =>
+  ({ name, agentId, state, ...(error ? { error: { ...error } } : {}) });
+
+/** Owns registration and persistent sessions. Inbox polling is a separate consumer. */
+export class TeamRuntime implements AgentTeamLifecycle {
+  private readonly sessions = new Map<string, TeammateSession>();
+  // Retain used names even when an initialization rollback removes its empty session.
+  private readonly names = new Set<string>([MAIN_AGENT_NAME]);
+  private readonly ready = new Set<string>([MAIN_AGENT_NAME]);
+  private readonly active = new Set<Promise<unknown>>();
+  private registryTail: Promise<unknown> = Promise.resolve();
+  private closing = false;
+  private stopPromise?: Promise<void>;
+
+  private constructor(private readonly options: TeamRuntimeOptions, private readonly bus: RuntimeMessageBus) {}
+
+  static async create(options: TeamRuntimeOptions): Promise<TeamRuntime> {
+    const bus = options.bus ?? await MessageBus.open(options.workspace);
+    try {
+      await bus.register(MAIN_AGENT_NAME);
+      return new TeamRuntime(options, bus);
+    } catch (error) {
+      // Only release a bus we opened; injected services remain their caller's responsibility on setup failure.
+      if (!options.bus) await bus.close();
+      throw error;
+    }
+  }
+
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.registryTail.then(operation);
+    this.registryTail = result.catch(() => {});
+    return result;
+  }
+
+  private assertOpen(): void {
+    if (this.closing) throw new Error('团队运行时已停止接纳工作');
+  }
+
+  private acceptingNames(): Set<string> {
+    return new Set([...this.ready].filter(name => {
+      const session = this.sessions.get(name);
+      return !this.closing && (!session || session.state === 'idle' || session.state === 'running');
+    }));
+  }
+
+  /** Trusted host API. Tools receive only the client bound to their own name. */
+  clientFor(name: string): AgentTeamClient {
+    if (!this.ready.has(name)) throw new Error(`未知 agent：${name}`);
+    return {
+      spawnTeammates: async args => {
+        if (name !== MAIN_AGENT_NAME) throw new Error('只有 main 可以创建 teammate');
+        return this.spawnTeammates(args);
+      },
+      sendMessage: async args => {
+        const input = parseSendMessageArgs(args, { agentName: name, knownAgents: this.acceptingNames() });
+        return this.exclusive(async () => {
+          this.assertOpen();
+          const parsed = parseSendMessageArgs(input, { agentName: name, knownAgents: this.acceptingNames() });
+          try { return await this.bus.append(parsed); }
+          catch (error) {
+            if (this.bus.error(name)) this.storageFailed(error);
+            throw error;
+          }
+        });
+      },
+    };
+  }
+
+  async spawnTeammates(args: SpawnTeammatesArgs): Promise<{ teammates: TeamAgentStatus[] }> {
+    // Snapshot and validate the entire batch before awaiting or reserving anything.
+    const input = parseSpawnTeammatesArgs(args, this.names);
+    return this.exclusive(async () => {
+      this.assertOpen();
+      const { teammates } = parseSpawnTeammatesArgs(input, this.names);
+      const batch: TeammateSession[] = teammates.map(spec => ({
+        ...spec, agentId: `teammate:${spec.name}:${randomUUID()}`, role: 'teammate',
+        state: 'idle', messages: [], bg_task_map: new Map(), turns: new AgentTurns(), memory: false,
+      }));
+      for (const session of batch) {
+        this.names.add(session.name);
+        this.sessions.set(session.name, session);
+      }
+      const registered: TeammateSession[] = [];
+      try {
+        for (const session of batch) {
+          this.assertOpen();
+          await this.bus.register(session.name);
+          registered.push(session);
+        }
+        this.assertOpen();
+      } catch (error) {
+        // No model has started. Only registrations owned by this batch can be rolled back.
+        for (const session of batch) this.failed(session, 'startup', error);
+        for (const session of registered) {
+          try {
+            if (await this.bus.unregisterEmpty(session.name)) this.sessions.delete(session.name);
+          } catch (cleanupError) {
+            this.failed(session, 'storage', `${detail(error)}; 清理失败：${detail(cleanupError)}`);
+          }
+        }
+        for (const session of batch) {
+          if (!registered.includes(session)) this.sessions.delete(session.name);
+        }
+        if (this.bus.error(MAIN_AGENT_NAME)) this.storageFailed(error);
+        return { teammates: batch.map(snapshot) };
+      }
+      // Publish all routes before scheduling even the first initial prompt.
+      for (const session of batch) this.ready.add(session.name);
+      for (const session of batch) {
+        // runTurn records failures and owns each promise, so detached initial runs cannot leak rejections.
+        void this.runTurn(session.name, session.prompt).catch(() => {});
+      }
+      return { teammates: batch.map(snapshot) };
+    });
+  }
+
+  /** Subsequent user/message input uses the same history, identity, background map and gate.
+   * A future inbox consumer must wrap metadata with teamMessageToUserEvent and ack only on success.
+   */
+  runTurn(name: string, input: string): Promise<AgentResult> {
+    this.assertOpen();
+    const session = this.sessions.get(name);
+    if (!session || !this.ready.has(name) || session.state === 'stopped' || session.state === 'stopping') {
+      throw new Error(`agent 不接收新轮次：${name}`);
+    }
+    session.state = 'running';
+    const result = session.turns.run(async () => {
+      this.assertOpen();
+      if (session.error || session.state === 'stopping' || session.state === 'stopped') {
+        throw new Error(`agent 不接收新轮次：${name}`);
+      }
+      session.state = 'running';
+      try {
+        const result = await (this.options.runAgent ?? runAgent)({
+          client: this.options.client, model: this.options.model, skills: this.options.skills,
+          tools: toolsForTeamRole(this.options.tools, 'teammate'), role: 'teammate', team: this.clientFor(name),
+          input, systemPrompt: `${this.options.systemPrompt ?? ''}\n你是 teammate「${name}」。你的消息 sender 是 ${name}，主 agent 是 main。专注获派任务，使用 send_message 与团队沟通。`,
+          messages: session.messages, agentId: session.agentId, bg_task_map: session.bg_task_map,
+          memory: false, logPrefix: `[teammate:${name}]`,
+        });
+        if (!result.finished) throw new Error(`teammate ${name} 未完成任务（${result.rounds} 轮）`);
+        return result;
+      } catch (error) {
+        this.failed(session, 'model', error);
+        throw error;
+      } finally {
+        session.state = this.closing || session.error ? 'stopped' : 'idle';
+      }
+    });
+    this.active.add(result);
+    void result.then(() => this.active.delete(result), () => this.active.delete(result));
+    return result;
+  }
+
+  private failed(session: TeammateSession, phase: NonNullable<TeamAgentStatus['error']>['phase'], error: unknown): void {
+    session.error = { phase, message: detail(error), created_at: new Date().toISOString() };
+    session.state = session.turns.busy ? 'stopping' : 'stopped';
+    console.error(`[teammate:${session.name}] ${phase}: ${detail(error)}`);
+  }
+
+  private storageFailed(error: unknown): void {
+    this.closing = true;
+    for (const session of this.sessions.values()) {
+      // Keep the more specific cleanup failure when propagating a shared fault.
+      if (session.error?.phase !== 'storage') this.failed(session, 'storage', error);
+    }
+  }
+
+  status(): readonly TeamAgentStatus[] {
+    return [...this.sessions.values()].map(snapshot);
+  }
+
+  /** Stop admission immediately; drain admitted registry I/O and loops before releasing ownership. */
+  stop(): Promise<void> {
+    if (!this.stopPromise) {
+      this.closing = true;
+      for (const session of this.sessions.values()) {
+        if (session.state !== 'stopped') session.state = 'stopping';
+      }
+      this.stopPromise = (async () => {
+        await this.registryTail;
+        await Promise.allSettled([...this.active]);
+        for (const session of this.sessions.values()) session.state = 'stopped';
+        await this.bus.close();
+      })();
+    }
+    return this.stopPromise;
+  }
+}

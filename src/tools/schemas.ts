@@ -1,3 +1,4 @@
+import { teamToolSchemas } from '../agent-team/protocol.js';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 
 export const toolSchemas: ChatCompletionFunctionTool[] = [
@@ -201,3 +202,5 @@ toolSchemas.push(
     parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
   } },
 );
+
+toolSchemas.push(...teamToolSchemas);

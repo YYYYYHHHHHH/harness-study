@@ -129,7 +129,7 @@ describe('subagent orchestration (mocked agent, no LLM/network)', () => {
     expect(await dispatch('spawn_subagent', { subagent_name: 'worker', task: 'task' })).toBe('done');
     const options = vi.mocked(runAgent).mock.calls[0]![0];
     expect(options).toMatchObject({ client: context.client, model: context.model, input: 'task' });
-    expect(options.tools).toEqual(tools.filter(tool => tool.schema.function.name !== 'spawn_subagent'));
+    expect(options.tools).toEqual(tools.filter(tool => !['spawn_subagent', 'spawn_teammates', 'send_message'].includes(tool.schema.function.name)));
     expect(options.systemPrompt).toContain('worker');
     expect(options.systemPrompt).toContain(process.cwd());
     expect(options.systemPrompt).not.toContain('、spawn_subagent');
@@ -149,9 +149,10 @@ describe('subagent orchestration (mocked agent, no LLM/network)', () => {
     }));
     await runSpawnSubagent('worker', 'task', { ...context, tools: [...tools, ...teamTools] });
     const options = vi.mocked(runAgent).mock.calls[0][0];
-    expect(options.tools).toEqual(tools.filter(tool => tool.schema.function.name !== 'spawn_subagent'));
+    expect(options.tools).toEqual(tools.filter(tool => !['spawn_subagent', 'spawn_teammates', 'send_message'].includes(tool.schema.function.name)));
     expect(options.systemPrompt).not.toContain('spawn_teammates');
     expect(options.systemPrompt).not.toContain('send_message');
+    expect(options.team).toBeUndefined();
     expect(options.memory).toBe(false);
     expect(options.agentId).toMatch(/^subagent:worker:/);
   });

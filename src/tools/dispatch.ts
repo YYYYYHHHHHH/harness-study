@@ -1,3 +1,5 @@
+import { toolsForTeamRole } from '../agent-team/capabilities.js';
+import type { AgentTeamClient, TeamAgentRole } from '../agent-team/types.js';
 import type OpenAI from 'openai';
 import type { ChatCompletionFunctionTool } from 'openai/resources/chat/completions';
 import type { SkillRegistry } from '../skills/index.js';
@@ -15,6 +17,8 @@ export interface ToolContext {
   cron?: CronJobService;
   bg_task_map?: BackgroundTaskMap;
   toolCallId?: string;
+  role?: TeamAgentRole;
+  team?: AgentTeamClient;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, context: ToolContext) => Promise<string>;
@@ -25,7 +29,7 @@ export interface AgentTool {
 }
 
 export async function dispatchTool(name: string, argumentsJson: string, context: ToolContext): Promise<string> {
-  const tool = context.tools.find(tool => tool.schema.function.name === name);
+  const tool = toolsForTeamRole(context.tools, context.role ?? 'main').find(tool => tool.schema.function.name === name);
   if (!tool) throw new Error(`当前 agent 未启用工具：${name}`);
   const raw: unknown = JSON.parse(argumentsJson);
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
